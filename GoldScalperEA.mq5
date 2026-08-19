@@ -2,7 +2,8 @@
 //|                                             GoldScalperEA.mq5    |
 //|  Multi-timeframe XAUUSD scalper, dikendalikan START/STOP oleh    |
 //|  API eksternal (dibaca dari APK). Parsing JSON asli untuk        |
-//|  field "running", bukan sekadar string search.                  |
+//|  field "status" (RUNNING/STOPPED), bukan sekadar string search  |
+//|  sembarangan di seluruh teks response.                           |
 //+------------------------------------------------------------------+
 #property copyright "Custom"
 #property version   "1.00"
@@ -98,17 +99,19 @@ void PollApiStatus()
    string json = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
 
    bool found = false;
-   bool val = JsonGetBool(json, "running", found);
+   string statusVal = "";
+   JsonGetString(json, "status", statusVal, found);
 
    if(found)
    {
+      bool val = (StringCompare(statusVal, "RUNNING", false) == 0);
       if(val != g_running)
-         PrintFormat("Status berubah: running %s -> %s", (g_running ? "true" : "false"), (val ? "true" : "false"));
+         PrintFormat("Status berubah: %s -> %s (raw status=%s)", (g_running ? "RUNNING" : "STOPPED"), (val ? "RUNNING" : "STOPPED"), statusVal);
       g_running = val;
    }
    else
    {
-      PrintFormat("Field running tidak ditemukan di response JSON. Raw: %s", json);
+      PrintFormat("Field status tidak ditemukan di response JSON. Raw: %s", json);
    }
 }
 
@@ -116,11 +119,11 @@ void PollApiStatus()
 //| Parser JSON minimal: ambil boolean untuk key yang PERSIS cocok   |
 //| (dibatasi tanda kutip + titik dua), bukan cari kata di teks bebas|
 //+------------------------------------------------------------------+
-bool JsonGetBool(const string &json, const string key, bool &found)
+bool JsonGetString(const string &json, const string key, string &value, bool &found)
 {
    found = false;
-   string dq = CharToString(34); // karakter tanda kutip ("), dibuat lewat kode ASCII
-                                  // biar aman dari masalah escape \" di compiler
+   value = "";
+   string dq = CharToString(34);
    string needle = dq + key + dq;
    int pos = StringFind(json, needle);
    if(pos < 0) return false;
@@ -140,17 +143,17 @@ bool JsonGetBool(const string &json, const string key, bool &found)
                       StringGetCharacter(json, i) == '\n' || StringGetCharacter(json, i) == '\r'))
       i++;
 
-   if(i + 4 <= len && StringSubstr(json, i, 4) == "true")
-   {
-      found = true;
-      return true;
-   }
-   if(i + 5 <= len && StringSubstr(json, i, 5) == "false")
-   {
-      found = true;
-      return false;
-   }
-   return false; // value bukan boolean (mis. null/angka) -> found tetap false
+   if(i >= len || StringGetCharacter(json, i) != '"') return false; // value harus string
+   i++; // lewati kutip pembuka
+
+   int start = i;
+   while(i < len && StringGetCharacter(json, i) != '"')
+      i++;
+   if(i >= len) return false; // kutip penutup tidak ketemu
+
+   value = StringSubstr(json, start, i - start);
+   found = true;
+   return true;
 }
 
 //+------------------------------------------------------------------+
