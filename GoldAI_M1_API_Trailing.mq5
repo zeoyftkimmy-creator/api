@@ -36,7 +36,7 @@ input int API_Check_Seconds = 3;
 
 // API status
 input string API_STATUS =
-"https://gold-scalper-api-h376.onrender.com/api/status";
+"https://gold-scalper-api-h376.onrender.com/status";
 
 //===================================================================
 
