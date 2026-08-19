@@ -72,4 +72,233 @@ int Check3CandleSignal()
    double close1 = iClose(_Symbol, PERIOD_M1, 1);
    double open2  = iOpen(_Symbol, PERIOD_M1, 2);
    double close2 = iClose(_Symbol, PERIOD_M1, 2);
-   double open3  = iOpen(_
+   double open3  = iOpen(_Symbol, PERIOD_M1, 3);
+   double close3 = iClose(_Symbol, PERIOD_M1, 3);
+
+   bool bull1 = close1 > open1;
+   bool bull2 = close2 > open2;
+   bool bull3 = close3 > open3;
+
+   bool bear1 = close1 < open1;
+   bool bear2 = close2 < open2;
+   bool bear3 = close3 < open3;
+
+   if(bull1 && bull2 && bull3) return 1;   // BUY signal
+   if(bear1 && bear2 && bear3) return -1;  // SELL signal
+   return 0;
+}
+
+//+------------------------------------------------------------------+
+//| Cek status START/STOP dari API (GET request)                     |
+//| Response yang diharapkan: {"status":"RUNNING"} atau {"status":"STOPPED"} |
+//+------------------------------------------------------------------+
+void CheckApiStatus()
+{
+   if(ApiStatusUrl == "") return;
+   if(TimeCurrent() - lastApiCheckTime < ApiCheckSeconds) return;
+   lastApiCheckTime = TimeCurrent();
+
+   string headers = "";
+   char   postData[];
+   char   result[];
+   string resultHeaders;
+   int    timeout = 5000;
+
+   int res = WebRequest("GET", ApiStatusUrl, headers, timeout, postData, result, resultHeaders);
+
+   if(res == -1)
+   {
+      int err = GetLastError();
+      Print("WebRequest ke API status gagal, error: ", err,
+            " -- pastikan URL sudah ditambahkan di Tools > Options > Expert Advisors > Allow WebRequest for listed URL");
+      return; // pertahankan status terakhir yang diketahui, jangan diubah saat gagal fetch
+   }
+
+   string response = CharArrayToString(result);
+
+   if(StringFind(response, "RUNNING") >= 0)
+   {
+      if(!botEnabled) Print("Status API: RUNNING -> bot diaktifkan kembali");
+      botEnabled = true;
+   }
+   else if(StringFind(response, "STOPPED") >= 0)
+   {
+      if(botEnabled) Print("Status API: STOPPED -> entry baru dihentikan (posisi berjalan tetap di-trailing)");
+      botEnabled = false;
+   }
+   else
+   {
+      Print("Response API tidak dikenali: ", response);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Buka posisi BUY                                                  |
+//+------------------------------------------------------------------+
+void OpenBuy()
+{
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double sl  = ask - SL_Pips * PipSize;
+
+   request.action       = TRADE_ACTION_DEAL;
+   request.symbol        = _Symbol;
+   request.volume        = LotSize;
+   request.type          = ORDER_TYPE_BUY;
+   request.price         = ask;
+   request.sl            = NormalizeDouble(sl, _Digits);
+   request.tp             = 0; // tanpa TP
+   request.deviation     = Slippage;
+   request.magic         = MagicNumber;
+   request.comment       = "3Candle-BUY";
+   request.type_filling  = ORDER_FILLING_FOK;
+
+   if(!OrderSend(request, result))
+      Print("OpenBuy gagal, error: ", GetLastError());
+   else
+      Print("OpenBuy sukses, ticket: ", result.order);
+}
+
+//+------------------------------------------------------------------+
+//| Buka posisi SELL                                                 |
+//+------------------------------------------------------------------+
+void OpenSell()
+{
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double sl  = bid + SL_Pips * PipSize;
+
+   request.action       = TRADE_ACTION_DEAL;
+   request.symbol        = _Symbol;
+   request.volume        = LotSize;
+   request.type          = ORDER_TYPE_SELL;
+   request.price         = bid;
+   request.sl            = NormalizeDouble(sl, _Digits);
+   request.tp             = 0; // tanpa TP
+   request.deviation     = Slippage;
+   request.magic         = MagicNumber;
+   request.comment       = "3Candle-SELL";
+   request.type_filling  = ORDER_FILLING_FOK;
+
+   if(!OrderSend(request, result))
+      Print("OpenSell gagal, error: ", GetLastError());
+   else
+      Print("OpenSell sukses, ticket: ", result.order);
+}
+
+//+------------------------------------------------------------------+
+//| Trailing stop untuk semua posisi EA ini                          |
+//+------------------------------------------------------------------+
+void TrailPositions()
+{
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != (long)MagicNumber) continue;
+
+      long   posType   = PositionGetInteger(POSITION_TYPE);
+      double posOpen    = PositionGetDouble(POSITION_PRICE_OPEN);
+      double posSL       = PositionGetDouble(POSITION_SL);
+      double bid          = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask          = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+      if(posType == POSITION_TYPE_BUY)
+      {
+         double profitPips = (bid - posOpen) / PipSize;
+         if(profitPips >= TrailStart_Pips)
+         {
+            double newSL = NormalizeDouble(bid - TrailDistance_Pips * PipSize, _Digits);
+            // hanya geser SL naik (mengunci profit lebih banyak), tidak pernah turun
+            if(newSL > posSL || posSL == 0)
+            {
+               ModifySL(ticket, newSL);
+            }
+         }
+      }
+      else if(posType == POSITION_TYPE_SELL)
+      {
+         double profitPips = (posOpen - ask) / PipSize;
+         if(profitPips >= TrailStart_Pips)
+         {
+            double newSL = NormalizeDouble(ask + TrailDistance_Pips * PipSize, _Digits);
+            // hanya geser SL turun (mengunci profit lebih banyak), tidak pernah naik
+            if(newSL < posSL || posSL == 0)
+            {
+               ModifySL(ticket, newSL);
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Modifikasi SL posisi                                             |
+//+------------------------------------------------------------------+
+void ModifySL(ulong ticket, double newSL)
+{
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   if(!PositionSelectByTicket(ticket)) return;
+
+   request.action   = TRADE_ACTION_SLTP;
+   request.position = ticket;
+   request.symbol    = _Symbol;
+   request.sl         = newSL;
+   request.tp          = PositionGetDouble(POSITION_TP); // tetap 0 (tanpa TP)
+
+   if(!OrderSend(request, result))
+      Print("ModifySL gagal untuk ticket ", ticket, ", error: ", GetLastError());
+}
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   lastBarTime = iTime(_Symbol, PERIOD_M1, 0);
+   CheckApiStatus(); // cek status awal saat EA di-load
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // Cek status START/STOP dari API secara berkala
+   CheckApiStatus();
+
+   // Trailing dicek setiap tick supaya presisi, tetap jalan meskipun status STOPPED
+   if(CountOpenPositions() > 0)
+      TrailPositions();
+
+   // Kalau bot sedang dinonaktifkan lewat API, jangan buka posisi baru
+   if(!botEnabled) return;
+
+   // Entry hanya dicek saat bar baru terbentuk (artinya candle sebelumnya sudah close)
+   if(!IsNewBar()) return;
+
+   // Maksimal 1 posisi terbuka
+   if(CountOpenPositions() >= 1) return;
+
+   int signal = Check3CandleSignal();
+   if(signal == 1)
+      OpenBuy();
+   else if(signal == -1)
+      OpenSell();
+}
+//+------------------------------------------------------------------+
