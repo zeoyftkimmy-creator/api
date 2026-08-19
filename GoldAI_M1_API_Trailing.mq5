@@ -155,4 +155,328 @@ void CheckApiStatus()
       );
 
       return;
-  
+   }
+
+   string response = CharArrayToString(result);
+
+   if(StringFind(response, "RUNNING") >= 0)
+   {
+      if(!botEnabled)
+         Print("API RUNNING -> Bot aktif");
+
+      botEnabled = true;
+   }
+   else
+   if(StringFind(response, "STOPPED") >= 0)
+   {
+      if(botEnabled)
+         Print("API STOPPED -> Entry baru dihentikan");
+
+      botEnabled = false;
+   }
+   else
+   {
+      Print("Response API tidak dikenali: ", response);
+   }
+}
+
+
+//+------------------------------------------------------------------+
+//| BUKA BUY                                                         |
+//+------------------------------------------------------------------+
+void OpenBuy()
+{
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+   //===============================================================
+   // SL AWAL:
+   // Contoh ASK = 3998
+   // InitialSLDistance = 2
+   // SL = 3996
+   //===============================================================
+   double sl = ask - InitialSLDistance;
+
+   sl = NormalizeDouble(sl, _Digits);
+
+   request.action      = TRADE_ACTION_DEAL;
+   request.symbol      = _Symbol;
+   request.volume      = LotSize;
+   request.type        = ORDER_TYPE_BUY;
+   request.price       = ask;
+   request.sl          = sl;
+   request.tp          = 0;
+   request.deviation   = Slippage;
+   request.magic      = MagicNumber;
+   request.comment     = "3Candle-BUY";
+   request.type_filling = ORDER_FILLING_FOK;
+
+   if(!OrderSend(request, result))
+   {
+      Print(
+         "BUY gagal. Error: ",
+         GetLastError()
+      );
+   }
+   else
+   {
+      Print(
+         "BUY berhasil | Entry: ",
+         ask,
+         " | Initial SL: ",
+         sl
+      );
+   }
+}
+
+
+//+------------------------------------------------------------------+
+//| BUKA SELL                                                        |
+//+------------------------------------------------------------------+
+void OpenSell()
+{
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   //===============================================================
+   // SL AWAL:
+   // Contoh BID = 3998
+   // InitialSLDistance = 2
+   // SL = 4000
+   //===============================================================
+   double sl = bid + InitialSLDistance;
+
+   sl = NormalizeDouble(sl, _Digits);
+
+   request.action      = TRADE_ACTION_DEAL;
+   request.symbol      = _Symbol;
+   request.volume      = LotSize;
+   request.type        = ORDER_TYPE_SELL;
+   request.price       = bid;
+   request.sl          = sl;
+   request.tp          = 0;
+   request.deviation   = Slippage;
+   request.magic      = MagicNumber;
+   request.comment     = "3Candle-SELL";
+   request.type_filling = ORDER_FILLING_FOK;
+
+   if(!OrderSend(request, result))
+   {
+      Print(
+         "SELL gagal. Error: ",
+         GetLastError()
+      );
+   }
+   else
+   {
+      Print(
+         "SELL berhasil | Entry: ",
+         bid,
+         " | Initial SL: ",
+         sl
+      );
+   }
+}
+
+
+//+------------------------------------------------------------------+
+//| TRAILING STOP                                                    |
+//+------------------------------------------------------------------+
+void TrailPositions()
+{
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+
+      if(ticket <= 0)
+         continue;
+
+      if(!PositionSelectByTicket(ticket))
+         continue;
+
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+
+      if(PositionGetInteger(POSITION_MAGIC) != (long)MagicNumber)
+         continue;
+
+      long posType = PositionGetInteger(POSITION_TYPE);
+
+      double posOpen = PositionGetDouble(POSITION_PRICE_OPEN);
+      double posSL   = PositionGetDouble(POSITION_SL);
+
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+
+      //=============================================================
+      // BUY TRAILING
+      //=============================================================
+      if(posType == POSITION_TYPE_BUY)
+      {
+         double profitPips =
+            (bid - posOpen) / PipSize;
+
+         if(profitPips >= TrailStart_Pips)
+         {
+            double newSL =
+               bid - TrailDistance_Pips * PipSize;
+
+            newSL = NormalizeDouble(newSL, _Digits);
+
+            // SL hanya boleh naik
+            if(newSL > posSL || posSL == 0)
+            {
+               ModifySL(ticket, newSL);
+            }
+         }
+      }
+
+
+      //=============================================================
+      // SELL TRAILING
+      //=============================================================
+      else
+      if(posType == POSITION_TYPE_SELL)
+      {
+         double profitPips =
+            (posOpen - ask) / PipSize;
+
+         if(profitPips >= TrailStart_Pips)
+         {
+            double newSL =
+               ask + TrailDistance_Pips * PipSize;
+
+            newSL = NormalizeDouble(newSL, _Digits);
+
+            // SL hanya boleh turun
+            if(newSL < posSL || posSL == 0)
+            {
+               ModifySL(ticket, newSL);
+            }
+         }
+      }
+   }
+}
+
+
+//+------------------------------------------------------------------+
+//| MODIFIKASI SL                                                    |
+//+------------------------------------------------------------------+
+void ModifySL(ulong ticket, double newSL)
+{
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   if(!PositionSelectByTicket(ticket))
+      return;
+
+   request.action   = TRADE_ACTION_SLTP;
+   request.position = ticket;
+   request.symbol   = _Symbol;
+   request.sl       = newSL;
+   request.tp       = PositionGetDouble(POSITION_TP);
+
+   if(!OrderSend(request, result))
+   {
+      Print(
+         "Modify SL gagal | Ticket: ",
+         ticket,
+         " | Error: ",
+         GetLastError()
+      );
+   }
+}
+
+
+//+------------------------------------------------------------------+
+//| INIT                                                             |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   lastBarTime = iTime(
+      _Symbol,
+      PERIOD_M1,
+      0
+   );
+
+   CheckApiStatus();
+
+   Print("Gold3CandleTrail aktif.");
+   Print(
+      "Initial SL distance = ",
+      InitialSLDistance,
+      " harga"
+   );
+
+   return(INIT_SUCCEEDED);
+}
+
+
+//+------------------------------------------------------------------+
+//| TICK                                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   // Cek API
+   CheckApiStatus();
+
+
+   //===============================================================
+   // TRAILING TETAP BERJALAN WALAU API STOP
+   //===============================================================
+   if(CountOpenPositions() > 0)
+      TrailPositions();
+
+
+   //===============================================================
+   // API STOP = TIDAK ADA ENTRY BARU
+   //===============================================================
+   if(!botEnabled)
+      return;
+
+
+   //===============================================================
+   // ENTRY HANYA SAAT CANDLE M1 BARU
+   //===============================================================
+   if(!IsNewBar())
+      return;
+
+
+   //===============================================================
+   // MAKSIMAL 1 POSISI
+   //===============================================================
+   if(CountOpenPositions() >= 1)
+      return;
+
+
+   //===============================================================
+   // CEK 3 CANDLE
+   //===============================================================
+   int signal = Check3CandleSignal();
+
+
+   if(signal == 1)
+   {
+      OpenBuy();
+   }
+   else
+   if(signal == -1)
+   {
+      OpenSell();
+   }
+}
+//+------------------------------------------------------------------+
