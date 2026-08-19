@@ -1,0 +1,547 @@
+//+------------------------------------------------------------------+
+//| Gold Scalper API - SMC M5                                        |
+//| XAUUSD - API START/STOP + BOS + Trailing Stop                    |
+//| DEMO / FORWARD TEST VERSION                                      |
+//+------------------------------------------------------------------+
+#property strict
+#property version   "1.00"
+
+#include <Trade/Trade.mqh>
+
+CTrade trade;
+
+//==================================================================
+// INPUT
+//==================================================================
+
+input string InpSymbol              = "XAUUSD";
+input ENUM_TIMEFRAMES InpTimeframe  = PERIOD_M5;
+
+input double LotSize                = 0.01;
+input int    MagicNumber            = 26081602;
+
+input int    SwingLookback           = 20;
+input int    MinBodyPoints           = 100;
+
+input int    TrailingStartPoints     = 150;
+input int    TrailingDistancePoints  = 100;
+input int    TrailingStepPoints      = 20;
+
+input int    MaxSpreadPoints         = 80;
+input int    CooldownMinutes         = 5;
+
+// API
+input string API_URL = "https://gold-scalper-api-h376.onrender.com/api/status";
+
+//==================================================================
+// GLOBAL
+//==================================================================
+
+datetime LastBarTime = 0;
+datetime LastTradeTime = 0;
+
+bool BotRunning = false;
+
+//==================================================================
+// INIT
+//==================================================================
+
+int OnInit()
+{
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(20);
+
+   Print("======================================");
+   Print("Gold Scalper API initialized");
+   Print("Symbol: ", InpSymbol);
+   Print("Timeframe: M5");
+   Print("API: ", API_URL);
+   Print("======================================");
+
+   CheckAPI();
+
+   return(INIT_SUCCEEDED);
+}
+
+//==================================================================
+// TICK
+//==================================================================
+
+void OnTick()
+{
+   // ---------------------------------------------------------------
+   // 1. CHECK API
+   // ---------------------------------------------------------------
+   static datetime LastAPICheck = 0;
+
+   if(TimeCurrent() - LastAPICheck >= 5)
+   {
+      CheckAPI();
+      LastAPICheck = TimeCurrent();
+   }
+
+   // ---------------------------------------------------------------
+   // 2. TRAILING STOP
+   // ---------------------------------------------------------------
+   ManageTrailingStop();
+
+   // ---------------------------------------------------------------
+   // 3. BOT STOPPED
+   // ---------------------------------------------------------------
+   if(!BotRunning)
+      return;
+
+   // ---------------------------------------------------------------
+   // 4. ONLY M5
+   // ---------------------------------------------------------------
+   if(_Period != InpTimeframe)
+      return;
+
+   // ---------------------------------------------------------------
+   // 5. NEW CANDLE CHECK
+   // ---------------------------------------------------------------
+   datetime CurrentBarTime = iTime(InpSymbol, InpTimeframe, 0);
+
+   if(CurrentBarTime == LastBarTime)
+      return;
+
+   LastBarTime = CurrentBarTime;
+
+   // ---------------------------------------------------------------
+   // 6. SPREAD FILTER
+   // ---------------------------------------------------------------
+   double ask = SymbolInfoDouble(InpSymbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(InpSymbol, SYMBOL_BID);
+
+   double point = SymbolInfoDouble(InpSymbol, SYMBOL_POINT);
+
+   if(point <= 0)
+      return;
+
+   double spread = (ask - bid) / point;
+
+   if(spread > MaxSpreadPoints)
+   {
+      Print("Spread terlalu besar: ", spread);
+      return;
+   }
+
+   // ---------------------------------------------------------------
+   // 7. ONE POSITION ONLY
+   // ---------------------------------------------------------------
+   if(HasOpenPosition())
+      return;
+
+   // ---------------------------------------------------------------
+   // 8. COOLDOWN
+   // ---------------------------------------------------------------
+   if(LastTradeTime > 0)
+   {
+      if(TimeCurrent() - LastTradeTime <
+         CooldownMinutes * 60)
+      {
+         return;
+      }
+   }
+
+   // ---------------------------------------------------------------
+   // 9. SIGNAL
+   // ---------------------------------------------------------------
+
+   int signal = GetSignal();
+
+   if(signal == 1)
+   {
+      OpenBuy();
+   }
+   else if(signal == -1)
+   {
+      OpenSell();
+   }
+}
+
+//==================================================================
+// GET SIGNAL
+//==================================================================
+
+int GetSignal()
+{
+   double point = SymbolInfoDouble(InpSymbol, SYMBOL_POINT);
+
+   if(point <= 0)
+      return 0;
+
+   // Candle yang SUDAH CLOSE
+   double open1  = iOpen(InpSymbol, InpTimeframe, 1);
+   double close1 = iClose(InpSymbol, InpTimeframe, 1);
+   double high1  = iHigh(InpSymbol, InpTimeframe, 1);
+   double low1   = iLow(InpSymbol, InpTimeframe, 1);
+
+   if(open1 == 0 || close1 == 0)
+      return 0;
+
+   // Body candle
+   double body = MathAbs(close1 - open1) / point;
+
+   if(body < MinBodyPoints)
+      return 0;
+
+   //==============================================================
+   // CARI SWING HIGH / LOW DARI CANDLE SEBELUMNYA
+   //==============================================================
+
+   double previousHigh = 0;
+   double previousLow  = 0;
+
+   for(int i = 2; i <= SwingLookback + 1; i++)
+   {
+      double h = iHigh(InpSymbol, InpTimeframe, i);
+      double l = iLow(InpSymbol, InpTimeframe, i);
+
+      if(h > previousHigh)
+         previousHigh = h;
+
+      if(previousLow == 0 || l < previousLow)
+         previousLow = l;
+   }
+
+   if(previousHigh == 0 || previousLow == 0)
+      return 0;
+
+   //==============================================================
+   // BULLISH BOS
+   //==============================================================
+
+   bool bullishCandle = close1 > open1;
+
+   bool bullishBOS = close1 > previousHigh;
+
+   //==============================================================
+   // BEARISH BOS
+   //==============================================================
+
+   bool bearishCandle = close1 < open1;
+
+   bool bearishBOS = close1 < previousLow;
+
+   //==============================================================
+   // SIGNAL
+   //==============================================================
+
+   if(bullishCandle && bullishBOS)
+   {
+      Print("SIGNAL BUY - Bullish BOS");
+      return 1;
+   }
+
+   if(bearishCandle && bearishBOS)
+   {
+      Print("SIGNAL SELL - Bearish BOS");
+      return -1;
+   }
+
+   return 0;
+}
+
+//==================================================================
+// OPEN BUY
+//==================================================================
+
+void OpenBuy()
+{
+   double ask = SymbolInfoDouble(InpSymbol, SYMBOL_ASK);
+
+   if(ask <= 0)
+      return;
+
+   double lot = NormalizeLot(LotSize);
+
+   bool result = trade.Buy(
+      lot,
+      InpSymbol,
+      ask,
+      0,
+      0,
+      "Gold Scalper BUY"
+   );
+
+   if(result)
+   {
+      LastTradeTime = TimeCurrent();
+
+      Print("BUY berhasil dibuka");
+      Print("Lot: ", lot);
+      Print("Price: ", ask);
+   }
+   else
+   {
+      Print("BUY gagal. Error: ",
+            trade.ResultRetcode(),
+            " ",
+            trade.ResultRetcodeDescription());
+   }
+}
+
+//==================================================================
+// OPEN SELL
+//==================================================================
+
+void OpenSell()
+{
+   double bid = SymbolInfoDouble(InpSymbol, SYMBOL_BID);
+
+   if(bid <= 0)
+      return;
+
+   double lot = NormalizeLot(LotSize);
+
+   bool result = trade.Sell(
+      lot,
+      InpSymbol,
+      bid,
+      0,
+      0,
+      "Gold Scalper SELL"
+   );
+
+   if(result)
+   {
+      LastTradeTime = TimeCurrent();
+
+      Print("SELL berhasil dibuka");
+      Print("Lot: ", lot);
+      Print("Price: ", bid);
+   }
+   else
+   {
+      Print("SELL gagal. Error: ",
+            trade.ResultRetcode(),
+            " ",
+            trade.ResultRetcodeDescription());
+   }
+}
+
+//==================================================================
+// TRAILING STOP
+//==================================================================
+
+void ManageTrailingStop()
+{
+   if(!PositionSelect(InpSymbol))
+      return;
+
+   long magic = PositionGetInteger(POSITION_MAGIC);
+
+   if(magic != MagicNumber)
+      return;
+
+   long type = PositionGetInteger(POSITION_TYPE);
+
+   double openPrice =
+      PositionGetDouble(POSITION_PRICE_OPEN);
+
+   double currentSL =
+      PositionGetDouble(POSITION_SL);
+
+   double currentTP =
+      PositionGetDouble(POSITION_TP);
+
+   double point =
+      SymbolInfoDouble(InpSymbol, SYMBOL_POINT);
+
+   int digits =
+      (int)SymbolInfoInteger(InpSymbol, SYMBOL_DIGITS);
+
+   double bid =
+      SymbolInfoDouble(InpSymbol, SYMBOL_BID);
+
+   double ask =
+      SymbolInfoDouble(InpSymbol, SYMBOL_ASK);
+
+   //==============================================================
+   // BUY
+   //==============================================================
+
+   if(type == POSITION_TYPE_BUY)
+   {
+      double profitPoints =
+         (bid - openPrice) / point;
+
+      if(profitPoints < TrailingStartPoints)
+         return;
+
+      double newSL =
+         bid - TrailingDistancePoints * point;
+
+      newSL = NormalizeDouble(newSL, digits);
+
+      if(currentSL == 0 ||
+         newSL > currentSL + TrailingStepPoints * point)
+      {
+         if(trade.PositionModify(
+            InpSymbol,
+            newSL,
+            currentTP))
+         {
+            Print("BUY trailing SL moved: ", newSL);
+         }
+      }
+   }
+
+   //==============================================================
+   // SELL
+   //==============================================================
+
+   if(type == POSITION_TYPE_SELL)
+   {
+      double profitPoints =
+         (openPrice - ask) / point;
+
+      if(profitPoints < TrailingStartPoints)
+         return;
+
+      double newSL =
+         ask + TrailingDistancePoints * point;
+
+      newSL = NormalizeDouble(newSL, digits);
+
+      if(currentSL == 0 ||
+         newSL < currentSL - TrailingStepPoints * point)
+      {
+         if(trade.PositionModify(
+            InpSymbol,
+            newSL,
+            currentTP))
+         {
+            Print("SELL trailing SL moved: ", newSL);
+         }
+      }
+   }
+}
+
+//==================================================================
+// CHECK OPEN POSITION
+//==================================================================
+
+bool HasOpenPosition()
+{
+   if(!PositionSelect(InpSymbol))
+      return false;
+
+   long magic =
+      PositionGetInteger(POSITION_MAGIC);
+
+   if(magic != MagicNumber)
+      return false;
+
+   return true;
+}
+
+//==================================================================
+// NORMALIZE LOT
+//==================================================================
+
+double NormalizeLot(double lot)
+{
+   double minLot =
+      SymbolInfoDouble(InpSymbol, SYMBOL_VOLUME_MIN);
+
+   double maxLot =
+      SymbolInfoDouble(InpSymbol, SYMBOL_VOLUME_MAX);
+
+   double step =
+      SymbolInfoDouble(InpSymbol, SYMBOL_VOLUME_STEP);
+
+   if(lot < minLot)
+      lot = minLot;
+
+   if(lot > maxLot)
+      lot = maxLot;
+
+   lot = MathFloor(lot / step) * step;
+
+   return NormalizeDouble(lot, 2);
+}
+
+//==================================================================
+// API CHECK
+//==================================================================
+
+void CheckAPI()
+{
+   if(API_URL == "")
+   {
+      BotRunning = false;
+      return;
+   }
+
+   char data[];
+   char result[];
+
+   string headers = "";
+
+   string resultHeaders = "";
+
+   int timeout = 5000;
+
+   ResetLastError();
+
+   int response = WebRequest(
+      "GET",
+      API_URL,
+      headers,
+      timeout,
+      data,
+      result,
+      resultHeaders
+   );
+
+   if(response == -1)
+   {
+      int error = GetLastError();
+
+      Print("API WebRequest error: ", error);
+
+      BotRunning = false;
+
+      return;
+   }
+
+   string text = CharArrayToString(result);
+
+   Print("API Response: ", text);
+
+   //==============================================================
+   // API MENYATAKAN RUNNING
+   //==============================================================
+
+   if(StringFind(text, "\"running\":true") >= 0)
+   {
+      if(!BotRunning)
+         Print("API COMMAND: START");
+
+      BotRunning = true;
+   }
+
+   //==============================================================
+   // API MENYATAKAN STOPPED
+   //==============================================================
+
+   else if(StringFind(text, "\"running\":false") >= 0)
+   {
+      if(BotRunning)
+         Print("API COMMAND: STOP");
+
+      BotRunning = false;
+   }
+}
+
+//==================================================================
+// DEINIT
+//==================================================================
+
+void OnDeinit(const int reason)
+{
+   Print("Gold Scalper API stopped.");
+}
+//+------------------------------------------------------------------+
