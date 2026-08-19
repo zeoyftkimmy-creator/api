@@ -1,816 +1,304 @@
 //+------------------------------------------------------------------+
-//|              GoldAI_M1_API_3Candle.mq5                           |
-//| XAUUSD M1                                                        |
-//| 3 Candle Bullish/Bearish Confirmation                            |
-//| Initial SL 20 Pips                                                |
-//| Trailing Start +10 Pips                                           |
-//| Trailing Distance 5 Pips                                         |
-//| API START / STOP                                                   |
+//|  Gold3CandleTrail.mq5                                            |
+//|  Strategi:                                                       |
+//|   - XAUUSD, timeframe M1                                         |
+//|   - Konfirmasi 3 candle searah (3 bullish -> BUY, 3 bearish -> SELL)|
+//|   - Entry hanya setelah candle ke-3 CLOSE                        |
+//|   - SL awal 20 pips                                              |
+//|   - Trailing mulai aktif saat profit >= 10 pips                  |
+//|   - Jarak trailing 5 pips, terus mengikuti profit tanpa batas     |
+//|   - Tidak ada TP                                                 |
+//|   - Maksimal 1 posisi terbuka                                    |
+//|   - Cek status START/STOP dari API sebelum entry baru            |
 //+------------------------------------------------------------------+
+#property copyright "Custom EA"
+#property version   "1.10"
 #property strict
-#property version "3.00"
 
-#include <Trade/Trade.mqh>
+//--- input parameter
+input double   LotSize            = 0.01;   // Lot size
+input double   SL_Pips            = 20.0;   // Stop Loss awal (pips)
+input double   TrailStart_Pips    = 10.0;   // Profit minimum untuk mulai trailing (pips)
+input double   TrailDistance_Pips = 5.0;    // Jarak trailing dari harga saat ini (pips)
+input double   PipSize            = 0.10;   // Nilai 1 pip dalam harga (cek digit harga XAUUSD di broker anda: 2 digit -> 0.10, 3 digit -> 0.01)
+input ulong    MagicNumber        = 20260819;
+input int      Slippage           = 50;     // slippage dalam poin
+input string   ApiStatusUrl       = "https://gold-scalper-api-h376.onrender.com/status"; // URL API status/kontrol (START/STOP)
+input int      ApiCheckSeconds    = 5;      // interval cek status API (detik)
 
-CTrade trade;
+datetime lastBarTime      = 0;
+datetime lastApiCheckTime = 0;
+bool     botEnabled        = true; // status terakhir yang diketahui dari API (default aktif)
 
-//====================================================================
-// INPUT
-//====================================================================
-
-input string TradeSymbol = "XAUUSD";
-
-input double LotSize = 0.01;
-
-// Ukuran 1 pip untuk XAUUSD.
-// Sesuaikan dengan broker jika diperlukan.
-input double PipSize = 0.10;
-
-// Stop Loss awal
-input double InitialSL_Pips = 20.0;
-
-// Trailing mulai aktif
-input double TrailingStart_Pips = 10.0;
-
-// Jarak trailing dari harga sekarang
-input double TrailingDistance_Pips = 5.0;
-
-// Maksimum spread
-input double MaxSpread_Pips = 8.0;
-
-// Magic Number
-input long MagicNumber = 26081602;
-
-// Cek API setiap 3 detik
-input int API_Check_Seconds = 3;
-
-// API STATUS
-input string API_STATUS =
-"https://gold-scalper-api-h376.onrender.com/status";
-
-//====================================================================
-// VARIABLE
-//====================================================================
-
-bool EA_Running = false;
-
-datetime LastCandleTime = 0;
-datetime LastAPICheck = 0;
-
-//====================================================================
-// INIT
-//====================================================================
-
-int OnInit()
+//+------------------------------------------------------------------+
+//| Cek apakah bar baru sudah terbentuk di M1                        |
+//+------------------------------------------------------------------+
+bool IsNewBar()
 {
-   trade.SetExpertMagicNumber(MagicNumber);
-
-   Print("================================================");
-   Print(" GOLD AI M1 - 3 CANDLE SYSTEM");
-   Print("================================================");
-   Print("Symbol              : ", TradeSymbol);
-   Print("Lot                 : ", LotSize);
-   Print("Initial SL          : ", InitialSL_Pips, " pips");
-   Print("Trailing Start      : ", TrailingStart_Pips, " pips");
-   Print("Trailing Distance   : ", TrailingDistance_Pips, " pips");
-   Print("API Status          : ", API_STATUS);
-   Print("================================================");
-
-   // Cek API pertama kali
-   CheckAPI();
-
-   // Supaya EA tidak langsung entry
-   // dari candle lama ketika pertama dipasang
-   LastCandleTime = iTime(
-      TradeSymbol,
-      PERIOD_M1,
-      0
-   );
-
-   return(INIT_SUCCEEDED);
+   datetime currentBarTime = iTime(_Symbol, PERIOD_M1, 0);
+   if(currentBarTime != lastBarTime)
+   {
+      lastBarTime = currentBarTime;
+      return true;
+   }
+   return false;
 }
 
-//====================================================================
-// TICK
-//====================================================================
-
-void OnTick()
+//+------------------------------------------------------------------+
+//| Hitung jumlah posisi terbuka milik EA ini                        |
+//+------------------------------------------------------------------+
+int CountOpenPositions()
 {
-   //===============================================================
-   // 1. CEK API
-   //===============================================================
-
-   if(
-      TimeCurrent() - LastAPICheck
-      >= API_Check_Seconds
-   )
+   int count = 0;
+   for(int i = 0; i < PositionsTotal(); i++)
    {
-      CheckAPI();
-
-      LastAPICheck = TimeCurrent();
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != (long)MagicNumber) continue;
+      count++;
    }
-
-   //===============================================================
-   // 2. TRAILING SELALU AKTIF
-   //===============================================================
-
-   ManageTrailing();
-
-   //===============================================================
-   // 3. API STOP
-   //===============================================================
-
-   if(!EA_Running)
-      return;
-
-   //===============================================================
-   // 4. CEK CANDLE BARU
-   //===============================================================
-
-   datetime CurrentCandleTime =
-      iTime(
-         TradeSymbol,
-         PERIOD_M1,
-         0
-      );
-
-   if(CurrentCandleTime == LastCandleTime)
-      return;
-
-   LastCandleTime = CurrentCandleTime;
-
-   //===============================================================
-   // 5. CEK SPREAD
-   //===============================================================
-
-   if(!CheckSpread())
-   {
-      Print("Spread terlalu besar. Tidak entry.");
-      return;
-   }
-
-   //===============================================================
-   // 6. HANYA SATU POSISI
-   //===============================================================
-
-   if(HasOurPosition())
-   {
-      Print("Masih ada posisi EA. Tidak membuka posisi baru.");
-      return;
-   }
-
-   //===============================================================
-   // 7. CEK 3 CANDLE
-   //===============================================================
-
-   int Signal = GetSignal();
-
-   //===============================================================
-   // BUY
-   //===============================================================
-
-   if(Signal == 1)
-   {
-      Print("--------------------------------------------");
-      Print("3 CANDLE BULLISH CONFIRMATION");
-      Print("SIGNAL : BUY");
-      Print("--------------------------------------------");
-
-      OpenBuy();
-   }
-
-   //===============================================================
-   // SELL
-   //===============================================================
-
-   else if(Signal == -1)
-   {
-      Print("--------------------------------------------");
-      Print("3 CANDLE BEARISH CONFIRMATION");
-      Print("SIGNAL : SELL");
-      Print("--------------------------------------------");
-
-      OpenSell();
-   }
-
-   else
-   {
-      Print("Tidak ada konfirmasi 3 candle.");
-   }
+   return count;
 }
 
-//====================================================================
-// API STATUS
-//====================================================================
-
-void CheckAPI()
+//+------------------------------------------------------------------+
+//| Cek konfirmasi 3 candle searah (candle 1,2,3 = shift 1,2,3)      |
+//| shift 0 = candle yang sedang berjalan (belum close)               |
+//+------------------------------------------------------------------+
+int Check3CandleSignal()
 {
-   char PostData[];
-   char Result[];
+   double open1  = iOpen(_Symbol, PERIOD_M1, 1);
+   double close1 = iClose(_Symbol, PERIOD_M1, 1);
+   double open2  = iOpen(_Symbol, PERIOD_M1, 2);
+   double close2 = iClose(_Symbol, PERIOD_M1, 2);
+   double open3  = iOpen(_Symbol, PERIOD_M1, 3);
+   double close3 = iClose(_Symbol, PERIOD_M1, 3);
 
-   string Headers = "";
-   string ResultHeaders = "";
+   bool bull1 = close1 > open1;
+   bool bull2 = close2 > open2;
+   bool bull3 = close3 > open3;
 
-   ResetLastError();
+   bool bear1 = close1 < open1;
+   bool bear2 = close2 < open2;
+   bool bear3 = close3 < open3;
 
-   int HTTPCode =
-      WebRequest(
-         "GET",
-         API_STATUS,
-         Headers,
-         5000,
-         PostData,
-         Result,
-         ResultHeaders
-      );
-
-   //===============================================================
-   // ERROR
-   //===============================================================
-
-   if(HTTPCode == -1)
-   {
-      Print(
-         "API WebRequest ERROR = ",
-         GetLastError()
-      );
-
-      return;
-   }
-
-   string Response =
-      CharArrayToString(Result);
-
-   Print(
-      "API Response = ",
-      Response
-   );
-
-   //===============================================================
-   // START
-   //===============================================================
-
-   if(
-      StringFind(
-         Response,
-         "\"running\":true"
-      ) >= 0
-   )
-   {
-      if(!EA_Running)
-      {
-         Print("============================================");
-         Print(" API START RECEIVED");
-         Print(" EA RUNNING");
-         Print("============================================");
-      }
-
-      EA_Running = true;
-   }
-
-   //===============================================================
-   // STOP
-   //===============================================================
-
-   else if(
-      StringFind(
-         Response,
-         "\"running\":false"
-      ) >= 0
-   )
-   {
-      if(EA_Running)
-      {
-         Print("============================================");
-         Print(" API STOP RECEIVED");
-         Print(" EA STOPPED");
-         Print("============================================");
-      }
-
-      EA_Running = false;
-   }
-}
-
-//====================================================================
-// GET SIGNAL
-//====================================================================
-
-int GetSignal()
-{
-   //===============================================================
-   // Candle 1 = candle terakhir yang SUDAH CLOSE
-   // Candle 2 = candle sebelumnya
-   // Candle 3 = candle sebelumnya lagi
-   //
-   // Candle 0 tidak digunakan karena masih berjalan.
-   //===============================================================
-
-   double Open1 =
-      iOpen(
-         TradeSymbol,
-         PERIOD_M1,
-         1
-      );
-
-   double Close1 =
-      iClose(
-         TradeSymbol,
-         PERIOD_M1,
-         1
-      );
-
-   double Open2 =
-      iOpen(
-         TradeSymbol,
-         PERIOD_M1,
-         2
-      );
-
-   double Close2 =
-      iClose(
-         TradeSymbol,
-         PERIOD_M1,
-         2
-      );
-
-   double Open3 =
-      iOpen(
-         TradeSymbol,
-         PERIOD_M1,
-         3
-      );
-
-   double Close3 =
-      iClose(
-         TradeSymbol,
-         PERIOD_M1,
-         3
-      );
-
-   //===============================================================
-   // 3 CANDLE BULLISH
-   //===============================================================
-
-   bool Bullish3 =
-      Close1 > Open1 &&
-      Close2 > Open2 &&
-      Close3 > Open3;
-
-   //===============================================================
-   // 3 CANDLE BEARISH
-   //===============================================================
-
-   bool Bearish3 =
-      Close1 < Open1 &&
-      Close2 < Open2 &&
-      Close3 < Open3;
-
-   //===============================================================
-   // SIGNAL BUY
-   //===============================================================
-
-   if(Bullish3)
-      return 1;
-
-   //===============================================================
-   // SIGNAL SELL
-   //===============================================================
-
-   if(Bearish3)
-      return -1;
-
-   //===============================================================
-   // NO SIGNAL
-   //===============================================================
-
+   if(bull1 && bull2 && bull3) return 1;   // BUY signal
+   if(bear1 && bear2 && bear3) return -1;  // SELL signal
    return 0;
 }
 
-//====================================================================
-// OPEN BUY
-//====================================================================
+//+------------------------------------------------------------------+
+//| Cek status START/STOP dari API (GET request)                     |
+//| Response yang diharapkan: {"status":"RUNNING"} atau {"status":"STOPPED"} |
+//+------------------------------------------------------------------+
+void CheckApiStatus()
+{
+   if(ApiStatusUrl == "") return;
+   if(TimeCurrent() - lastApiCheckTime < ApiCheckSeconds) return;
+   lastApiCheckTime = TimeCurrent();
 
+   string headers = "";
+   char   postData[];
+   char   result[];
+   string resultHeaders;
+   int    timeout = 5000;
+
+   int res = WebRequest("GET", ApiStatusUrl, headers, timeout, postData, result, resultHeaders);
+
+   if(res == -1)
+   {
+      int err = GetLastError();
+      Print("WebRequest ke API status gagal, error: ", err,
+            " -- pastikan URL sudah ditambahkan di Tools > Options > Expert Advisors > Allow WebRequest for listed URL");
+      return; // pertahankan status terakhir yang diketahui, jangan diubah saat gagal fetch
+   }
+
+   string response = CharArrayToString(result);
+
+   if(StringFind(response, "RUNNING") >= 0)
+   {
+      if(!botEnabled) Print("Status API: RUNNING -> bot diaktifkan kembali");
+      botEnabled = true;
+   }
+   else if(StringFind(response, "STOPPED") >= 0)
+   {
+      if(botEnabled) Print("Status API: STOPPED -> entry baru dihentikan (posisi berjalan tetap di-trailing)");
+      botEnabled = false;
+   }
+   else
+   {
+      Print("Response API tidak dikenali: ", response);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Buka posisi BUY                                                  |
+//+------------------------------------------------------------------+
 void OpenBuy()
 {
-   double Ask =
-      SymbolInfoDouble(
-         TradeSymbol,
-         SYMBOL_ASK
-      );
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+   ZeroMemory(request);
+   ZeroMemory(result);
 
-   if(Ask <= 0)
-      return;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double sl  = ask - SL_Pips * PipSize;
 
-   //===============================================================
-   // SL 20 PIPS
-   //===============================================================
+   request.action       = TRADE_ACTION_DEAL;
+   request.symbol        = _Symbol;
+   request.volume        = LotSize;
+   request.type          = ORDER_TYPE_BUY;
+   request.price         = ask;
+   request.sl            = NormalizeDouble(sl, _Digits);
+   request.tp             = 0; // tanpa TP
+   request.deviation     = Slippage;
+   request.magic         = MagicNumber;
+   request.comment       = "3Candle-BUY";
+   request.type_filling  = ORDER_FILLING_FOK;
 
-   double SL =
-      Ask -
-      (
-         InitialSL_Pips *
-         PipSize
-      );
-
-   SL = NormalizePrice(SL);
-
-   trade.SetDeviationInPoints(50);
-
-   bool Result =
-      trade.Buy(
-         LotSize,
-         TradeSymbol,
-         0,
-         SL,
-         0,
-         "GoldAI 3 Candle BUY"
-      );
-
-   //===============================================================
-   // SUCCESS
-   //===============================================================
-
-   if(Result)
-   {
-      Print("============================================");
-      Print("BUY OPENED");
-      Print("Entry = ", Ask);
-      Print("SL    = ", SL);
-      Print("============================================");
-   }
-
-   //===============================================================
-   // ERROR
-   //===============================================================
-
+   if(!OrderSend(request, result))
+      Print("OpenBuy gagal, error: ", GetLastError());
    else
-   {
-      Print(
-         "BUY FAILED: ",
-         trade.ResultRetcode(),
-         " - ",
-         trade.ResultRetcodeDescription()
-      );
-   }
+      Print("OpenBuy sukses, ticket: ", result.order);
 }
 
-//====================================================================
-// OPEN SELL
-//====================================================================
-
+//+------------------------------------------------------------------+
+//| Buka posisi SELL                                                 |
+//+------------------------------------------------------------------+
 void OpenSell()
 {
-   double Bid =
-      SymbolInfoDouble(
-         TradeSymbol,
-         SYMBOL_BID
-      );
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+   ZeroMemory(request);
+   ZeroMemory(result);
 
-   if(Bid <= 0)
-      return;
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double sl  = bid + SL_Pips * PipSize;
 
-   //===============================================================
-   // SL 20 PIPS
-   //===============================================================
+   request.action       = TRADE_ACTION_DEAL;
+   request.symbol        = _Symbol;
+   request.volume        = LotSize;
+   request.type          = ORDER_TYPE_SELL;
+   request.price         = bid;
+   request.sl            = NormalizeDouble(sl, _Digits);
+   request.tp             = 0; // tanpa TP
+   request.deviation     = Slippage;
+   request.magic         = MagicNumber;
+   request.comment       = "3Candle-SELL";
+   request.type_filling  = ORDER_FILLING_FOK;
 
-   double SL =
-      Bid +
-      (
-         InitialSL_Pips *
-         PipSize
-      );
-
-   SL = NormalizePrice(SL);
-
-   trade.SetDeviationInPoints(50);
-
-   bool Result =
-      trade.Sell(
-         LotSize,
-         TradeSymbol,
-         0,
-         SL,
-         0,
-         "GoldAI 3 Candle SELL"
-      );
-
-   //===============================================================
-   // SUCCESS
-   //===============================================================
-
-   if(Result)
-   {
-      Print("============================================");
-      Print("SELL OPENED");
-      Print("Entry = ", Bid);
-      Print("SL    = ", SL);
-      Print("============================================");
-   }
-
-   //===============================================================
-   // ERROR
-   //===============================================================
-
+   if(!OrderSend(request, result))
+      Print("OpenSell gagal, error: ", GetLastError());
    else
-   {
-      Print(
-         "SELL FAILED: ",
-         trade.ResultRetcode(),
-         " - ",
-         trade.ResultRetcodeDescription()
-      );
-   }
+      Print("OpenSell sukses, ticket: ", result.order);
 }
 
-//====================================================================
-// TRAILING STOP
-//====================================================================
-
-void ManageTrailing()
+//+------------------------------------------------------------------+
+//| Trailing stop untuk semua posisi EA ini                          |
+//+------------------------------------------------------------------+
+void TrailPositions()
 {
-   //===============================================================
-   // Tidak ada posisi
-   //===============================================================
-
-   if(!PositionSelect(TradeSymbol))
-      return;
-
-   //===============================================================
-   // Cek Magic Number
-   //===============================================================
-
-   long PositionMagic =
-      PositionGetInteger(
-         POSITION_MAGIC
-      );
-
-   if(PositionMagic != MagicNumber)
-      return;
-
-   //===============================================================
-   // DATA POSISI
-   //===============================================================
-
-   long PositionType =
-      PositionGetInteger(
-         POSITION_TYPE
-      );
-
-   double OpenPrice =
-      PositionGetDouble(
-         POSITION_PRICE_OPEN
-      );
-
-   double CurrentSL =
-      PositionGetDouble(
-         POSITION_SL
-      );
-
-   double CurrentTP =
-      PositionGetDouble(
-         POSITION_TP
-      );
-
-   double Bid =
-      SymbolInfoDouble(
-         TradeSymbol,
-         SYMBOL_BID
-      );
-
-   double Ask =
-      SymbolInfoDouble(
-         TradeSymbol,
-         SYMBOL_ASK
-      );
-
-   //===============================================================
-   // BUY
-   //===============================================================
-
-   if(PositionType == POSITION_TYPE_BUY)
+   for(int i = 0; i < PositionsTotal(); i++)
    {
-      double ProfitPips =
-         (
-            Bid -
-            OpenPrice
-         )
-         /
-         PipSize;
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != (long)MagicNumber) continue;
 
-      // Trailing baru aktif +10 pip
-      if(
-         ProfitPips <
-         TrailingStart_Pips
-      )
-         return;
+      long   posType   = PositionGetInteger(POSITION_TYPE);
+      double posOpen    = PositionGetDouble(POSITION_PRICE_OPEN);
+      double posSL       = PositionGetDouble(POSITION_SL);
+      double bid          = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask          = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-      // SL 5 pip di bawah harga sekarang
-      double NewSL =
-         Bid -
-         (
-            TrailingDistance_Pips *
-            PipSize
-         );
-
-      NewSL =
-         NormalizePrice(NewSL);
-
-      //===========================================================
-      // SL HANYA BOLEH NAIK
-      //===========================================================
-
-      if(
-         CurrentSL == 0 ||
-         NewSL > CurrentSL
-      )
+      if(posType == POSITION_TYPE_BUY)
       {
-         if(NewSL < Bid)
+         double profitPips = (bid - posOpen) / PipSize;
+         if(profitPips >= TrailStart_Pips)
          {
-            bool Modified =
-               trade.PositionModify(
-                  TradeSymbol,
-                  NewSL,
-                  CurrentTP
-               );
-
-            if(Modified)
+            double newSL = NormalizeDouble(bid - TrailDistance_Pips * PipSize, _Digits);
+            // hanya geser SL naik (mengunci profit lebih banyak), tidak pernah turun
+            if(newSL > posSL || posSL == 0)
             {
-               Print(
-                  "BUY TRAILING | Profit +",
-                  DoubleToString(
-                     ProfitPips,
-                     1
-                  ),
-                  " pips | SL = ",
-                  DoubleToString(
-                     NewSL,
-                     _Digits
-                  )
-               );
+               ModifySL(ticket, newSL);
             }
          }
       }
-   }
-
-   //===============================================================
-   // SELL
-   //===============================================================
-
-   if(PositionType == POSITION_TYPE_SELL)
-   {
-      double ProfitPips =
-         (
-            OpenPrice -
-            Ask
-         )
-         /
-         PipSize;
-
-      // Trailing baru aktif +10 pip
-      if(
-         ProfitPips <
-         TrailingStart_Pips
-      )
-         return;
-
-      // SL 5 pip di atas harga sekarang
-      double NewSL =
-         Ask +
-         (
-            TrailingDistance_Pips *
-            PipSize
-         );
-
-      NewSL =
-         NormalizePrice(NewSL);
-
-      //===========================================================
-      // SL HANYA BOLEH TURUN
-      //===========================================================
-
-      if(
-         CurrentSL == 0 ||
-         NewSL < CurrentSL
-      )
+      else if(posType == POSITION_TYPE_SELL)
       {
-         if(NewSL > Ask)
+         double profitPips = (posOpen - ask) / PipSize;
+         if(profitPips >= TrailStart_Pips)
          {
-            bool Modified =
-               trade.PositionModify(
-                  TradeSymbol,
-                  NewSL,
-                  CurrentTP
-               );
-
-            if(Modified)
+            double newSL = NormalizeDouble(ask + TrailDistance_Pips * PipSize, _Digits);
+            // hanya geser SL turun (mengunci profit lebih banyak), tidak pernah naik
+            if(newSL < posSL || posSL == 0)
             {
-               Print(
-                  "SELL TRAILING | Profit +",
-                  DoubleToString(
-                     ProfitPips,
-                     1
-                  ),
-                  " pips | SL = ",
-                  DoubleToString(
-                     NewSL,
-                     _Digits
-                  )
-               );
+               ModifySL(ticket, newSL);
             }
          }
       }
    }
 }
 
-//====================================================================
-// CHECK OUR POSITION
-//====================================================================
-
-bool HasOurPosition()
+//+------------------------------------------------------------------+
+//| Modifikasi SL posisi                                             |
+//+------------------------------------------------------------------+
+void ModifySL(ulong ticket, double newSL)
 {
-   if(!PositionSelect(TradeSymbol))
-      return false;
+   MqlTradeRequest request;
+   MqlTradeResult  result;
+   ZeroMemory(request);
+   ZeroMemory(result);
 
-   long PositionMagic =
-      PositionGetInteger(
-         POSITION_MAGIC
-      );
+   if(!PositionSelectByTicket(ticket)) return;
 
-   if(
-      PositionMagic !=
-      MagicNumber
-   )
-      return false;
+   request.action   = TRADE_ACTION_SLTP;
+   request.position = ticket;
+   request.symbol    = _Symbol;
+   request.sl         = newSL;
+   request.tp          = PositionGetDouble(POSITION_TP); // tetap 0 (tanpa TP)
 
-   return true;
+   if(!OrderSend(request, result))
+      Print("ModifySL gagal untuk ticket ", ticket, ", error: ", GetLastError());
 }
 
-//====================================================================
-// CHECK SPREAD
-//====================================================================
-
-bool CheckSpread()
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
 {
-   double Ask =
-      SymbolInfoDouble(
-         TradeSymbol,
-         SYMBOL_ASK
-      );
-
-   double Bid =
-      SymbolInfoDouble(
-         TradeSymbol,
-         SYMBOL_BID
-      );
-
-   if(
-      Ask <= 0 ||
-      Bid <= 0
-   )
-      return false;
-
-   double SpreadPips =
-      (
-         Ask -
-         Bid
-      )
-      /
-      PipSize;
-
-   Print(
-      "Current Spread = ",
-      DoubleToString(
-         SpreadPips,
-         1
-      ),
-      " pips"
-   );
-
-   if(
-      SpreadPips >
-      MaxSpread_Pips
-   )
-      return false;
-
-   return true;
+   lastBarTime = iTime(_Symbol, PERIOD_M1, 0);
+   CheckApiStatus(); // cek status awal saat EA di-load
+   return(INIT_SUCCEEDED);
 }
 
-//====================================================================
-// NORMALIZE PRICE
-//====================================================================
-
-double NormalizePrice(double Price)
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
 {
-   int Digits =
-      (int)SymbolInfoInteger(
-         TradeSymbol,
-         SYMBOL_DIGITS
-      );
+   // Cek status START/STOP dari API secara berkala
+   CheckApiStatus();
 
-   return NormalizeDouble(
-      Price,
-      Digits
-   );
+   // Trailing dicek setiap tick supaya presisi, tetap jalan meskipun status STOPPED
+   if(CountOpenPositions() > 0)
+      TrailPositions();
+
+   // Kalau bot sedang dinonaktifkan lewat API, jangan buka posisi baru
+   if(!botEnabled) return;
+
+   // Entry hanya dicek saat bar baru terbentuk (artinya candle sebelumnya sudah close)
+   if(!IsNewBar()) return;
+
+   // Maksimal 1 posisi terbuka
+   if(CountOpenPositions() >= 1) return;
+
+   int signal = Check3CandleSignal();
+   if(signal == 1)
+      OpenBuy();
+   else if(signal == -1)
+      OpenSell();
 }
-
 //+------------------------------------------------------------------+
