@@ -31,7 +31,7 @@ input int    MaxSpreadPoints         = 80;
 input int    CooldownMinutes         = 5;
 
 // API
-input string API_URL = "https://gold-scalper-api-h376.onrender.com/api/status";
+input string API_URL = "https://gold-scalper-api-h376.onrender.com/status";
 
 //==================================================================
 // GLOBAL
