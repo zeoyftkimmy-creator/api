@@ -1,36 +1,45 @@
 //+------------------------------------------------------------------+
-//| GoldFiboRejection_v5.mq5                                        |
-//| XAUUSD                                                          |
+//| GoldFiboRejection_FINAL.mq5                                     |
+//| XAUUSD - M30 Swing / M15 Rejection / M5 Entry                  |
 //|                                                                  |
-//| M30 = Swing High / Swing Low + Fibonacci                       |
-//| Rejection Confirmation bertingkat:                              |
-//|   1) M15 (candle sudah close)                                   |
-//|   2) Jika M15 tidak ada -> M30 (candle sudah close)              |
-//|   3) Jika M30 tidak ada -> H1 (candle berjalan, TIDAK tunggu    |
-//|      close)                                                      |
-//| M5  = Entry                                                      |
+//| LOGIC:                                                           |
+//| M30 = Swing High & Swing Low                                    |
+//| M15 = Rejection Confirmation                                    |
+//| M5  = Entry                                                     |
 //|                                                                  |
 //| BUY:                                                             |
-//| Zone 1 = 0.236 - 0.382                                          |
-//| Zone 2 = 0.618 - 0.786                                          |
-//| TP1 = Fibonacci 0.000                                           |
-//| TP2 = Fibonacci -0.272                                          |
+//| Zone 1 = Fib 0.236 - 0.382                                     |
+//| Zone 2 = Fib 0.618 - 0.786                                     |
 //|                                                                  |
-//| SELL = kebalikan BUY                                             |
+//| SELL = kebalikan BUY                                            |
 //|                                                                  |
-//| Setelah TP1 tercapai:                                            |
+//| SL BUY  = Swing Low M30 - buffer                                |
+//| SL SELL = Swing High M30 + buffer                               |
+//|                                                                  |
+//| TP1 = Fib 0.000                                                 |
+//| TP2 = Fib -0.272                                                |
+//|                                                                  |
+//| Setelah TP1 tersentuh:                                          |
 //| trailing aktif dengan jarak $10                                 |
-//| Posisi tetap running sampai TP2 atau trailing SL terkena        |
+//| Posisi tetap berjalan sampai TP2 atau trailing SL               |
 //+------------------------------------------------------------------+
+
 #property copyright "Custom EA"
-#property version   "5.00"
+#property version   "6.00"
 #property strict
 
 //==================================================================//
-// SWING & FIBONACCI
+// 1. SWING M30
 //==================================================================//
+
 input ENUM_TIMEFRAMES SwingTF = PERIOD_M30;
+
 input int SwingLookback = 100;
+
+
+//==================================================================//
+// 2. FIBONACCI ZONE
+//==================================================================//
 
 input double Zone1Start = 0.236;
 input double Zone1End   = 0.382;
@@ -38,60 +47,84 @@ input double Zone1End   = 0.382;
 input double Zone2Start = 0.618;
 input double Zone2End   = 0.786;
 
-// TP Fibonacci
+
+//==================================================================//
+// 3. TAKE PROFIT FIBONACCI
+//==================================================================//
+
 input double TP1Level = 0.000;
 input double TP2Level = -0.272;
 
-//==================================================================//
-// REJECTION (bertingkat: M15 -> M30 -> H1)
-//==================================================================//
-input ENUM_TIMEFRAMES RejectionTF_M15 = PERIOD_M15;
-input ENUM_TIMEFRAMES RejectionTF_M30 = PERIOD_M30;
-input ENUM_TIMEFRAMES RejectionTF_H1  = PERIOD_H1;
 
-// Minimal wick terhadap range candle
+//==================================================================//
+// 4. REJECTION M15
+//==================================================================//
+
+input ENUM_TIMEFRAMES RejectionTF = PERIOD_M15;
+
+// Minimal wick terhadap total candle range
 input double RejectionWickRatio = 0.50;
 
+
 //==================================================================//
-// ENTRY
+// 5. ENTRY M5
 //==================================================================//
+
 input ENUM_TIMEFRAMES EntryTF = PERIOD_M5;
 
+
 //==================================================================//
-// STOP LOSS
+// 6. STOP LOSS
 //==================================================================//
+
+// Buffer di luar swing
 input double SLBufferUSD = 0.50;
 
+
 //==================================================================//
-// TRAILING SETELAH TP1
+// 7. TRAILING SETELAH TP1
 //==================================================================//
+
 input bool UseTP1Trailing = true;
 
-// Jarak trailing dari harga dalam dolar XAUUSD
+// Jarak trailing dalam harga XAUUSD
+// Contoh:
+// harga 3350
+// trailing = 3340
+// jarak = $10
 input double TP1TrailingDistanceUSD = 10.0;
 
-//==================================================================//
-// LOT
-//==================================================================//
-input double LotSize = 0.01;
 
 //==================================================================//
-// API
+// 8. LOT
 //==================================================================//
+
+input double LotSize = 0.01;
+
+
+//==================================================================//
+// 9. API START / STOP
+//==================================================================//
+
 input string ApiStatusUrl =
 "https://gold-scalper-api-h376.onrender.com/status";
 
 input int ApiCheckSeconds = 5;
 
-//==================================================================//
-// MAGIC / SLIPPAGE
-//==================================================================//
-input ulong MagicNumber = 20260820;
-input int Slippage = 50;
 
 //==================================================================//
-// ENUM
+// 10. MAGIC / SLIPPAGE
 //==================================================================//
+
+input ulong MagicNumber = 20260820;
+
+input int Slippage = 50;
+
+
+//==================================================================//
+// ENUM TREND
+//==================================================================//
+
 enum ZoneTrend
 {
    TREND_NONE,
@@ -99,25 +132,25 @@ enum ZoneTrend
    TREND_DOWN
 };
 
+
 //==================================================================//
-// GLOBAL
+// DATA GLOBAL
 //==================================================================//
+
 datetime LastEntryBar = 0;
 
-// Dedupe rejection per timeframe, supaya sinyal yang sama
-// tidak dipakai berulang kali
-datetime LastRejectionBarM15 = 0;
-datetime LastRejectionBarM30 = 0;
-datetime LastRejectionBarH1  = 0;
+datetime LastRejectionBar = 0;
 
 datetime LastApiCheck = 0;
 
 bool BotEnabled = true;
 
+
 //==================================================================//
-// DATA FIBONACCI YANG DISIMPAN SAAT ENTRY
+// DATA POSISI
 //==================================================================//
-struct TradeFiboData
+
+struct TradeData
 {
    bool valid;
 
@@ -128,16 +161,24 @@ struct TradeFiboData
 
    double tp1;
    double tp2;
+
    double initialSL;
 
    bool tp1Reached;
 };
 
-TradeFiboData ActiveTrade;
 
 //==================================================================//
-// RESET DATA TRADE
+// DATA POSISI AKTIF
 //==================================================================//
+
+TradeData ActiveTrade;
+
+
+//==================================================================//
+// RESET DATA
+//==================================================================//
+
 void ResetTradeData()
 {
    ActiveTrade.valid = false;
@@ -145,45 +186,55 @@ void ResetTradeData()
    ActiveTrade.direction = -1;
 
    ActiveTrade.swingHigh = 0;
+
    ActiveTrade.swingLow = 0;
 
    ActiveTrade.tp1 = 0;
+
    ActiveTrade.tp2 = 0;
+
    ActiveTrade.initialSL = 0;
 
    ActiveTrade.tp1Reached = false;
 }
 
+
 //==================================================================//
-// BAR BARU M5
+// CEK BAR M5 BARU
 //==================================================================//
+
 bool IsNewEntryBar()
 {
-   datetime t =
+   datetime currentBar =
       iTime(
          _Symbol,
          EntryTF,
          0
       );
 
-   if(t <= 0)
+   if(currentBar <= 0)
       return false;
 
-   if(t != LastEntryBar)
+
+   if(currentBar != LastEntryBar)
    {
-      LastEntryBar = t;
+      LastEntryBar = currentBar;
+
       return true;
    }
 
    return false;
 }
 
+
 //==================================================================//
-// HITUNG POSISI EA
+// HITUNG POSISI MILIK EA
 //==================================================================//
+
 int CountOpenPositions()
 {
    int count = 0;
+
 
    for(int i = PositionsTotal() - 1;
        i >= 0;
@@ -195,27 +246,39 @@ int CountOpenPositions()
       if(ticket == 0)
          continue;
 
+
       if(!PositionSelectByTicket(ticket))
          continue;
 
-      if(PositionGetString(POSITION_SYMBOL)
-         != _Symbol)
+
+      if(
+         PositionGetString(POSITION_SYMBOL)
+         != _Symbol
+      )
          continue;
 
-      if((ulong)PositionGetInteger(
-         POSITION_MAGIC)
-         != MagicNumber)
+
+      if(
+         (ulong)PositionGetInteger(
+            POSITION_MAGIC
+         )
+         != MagicNumber
+      )
          continue;
+
 
       count++;
    }
 
+
    return count;
 }
 
+
 //==================================================================//
-// CARI SWING M30
+// CARI SWING HIGH / LOW M30
 //==================================================================//
+
 ZoneTrend GetSwingTrend(
    double &swingHigh,
    double &swingLow,
@@ -223,7 +286,7 @@ ZoneTrend GetSwingTrend(
    datetime &lowTime
 )
 {
-   int idxHigh =
+   int highIndex =
       iHighest(
          _Symbol,
          SwingTF,
@@ -232,7 +295,8 @@ ZoneTrend GetSwingTrend(
          1
       );
 
-   int idxLow =
+
+   int lowIndex =
       iLowest(
          _Symbol,
          SwingTF,
@@ -241,54 +305,84 @@ ZoneTrend GetSwingTrend(
          1
       );
 
-   if(idxHigh < 0 || idxLow < 0)
+
+   if(
+      highIndex < 0 ||
+      lowIndex < 0
+   )
+   {
       return TREND_NONE;
+   }
+
 
    swingHigh =
       iHigh(
          _Symbol,
          SwingTF,
-         idxHigh
+         highIndex
       );
+
 
    swingLow =
       iLow(
          _Symbol,
          SwingTF,
-         idxLow
+         lowIndex
       );
+
 
    highTime =
       iTime(
          _Symbol,
          SwingTF,
-         idxHigh
+         highIndex
       );
+
 
    lowTime =
       iTime(
          _Symbol,
          SwingTF,
-         idxLow
+         lowIndex
       );
+
 
    if(swingHigh <= swingLow)
       return TREND_NONE;
 
-   // High lebih baru = leg bullish
-   if(highTime > lowTime)
-      return TREND_UP;
 
-   // Low lebih baru = leg bearish
+   //===============================================================
+   // HIGH LEBIH BARU
+   // Berarti leg bullish
+   // Area retracement = BUY
+   //===============================================================
+
+   if(highTime > lowTime)
+   {
+      return TREND_UP;
+   }
+
+
+   //===============================================================
+   // LOW LEBIH BARU
+   // Berarti leg bearish
+   // Area retracement = SELL
+   //===============================================================
+
    if(lowTime > highTime)
+   {
       return TREND_DOWN;
+   }
+
 
    return TREND_NONE;
 }
 
+
 //==================================================================//
 // HITUNG HARGA FIBONACCI
 //==================================================================//
+
 double FibPrice(
    ZoneTrend trend,
    double swingHigh,
@@ -299,13 +393,22 @@ double FibPrice(
    double range =
       swingHigh - swingLow;
 
+
    if(range <= 0)
       return 0;
 
-   // BUY:
-   // 0 = swing high
-   // level positif = turun
-   // level negatif = naik di atas swing high
+
+   //===============================================================
+   // BUY
+   //
+   // Fib 0       = Swing High
+   // Fib 0.236   = turun
+   // Fib 0.382   = turun
+   // Fib 0.618   = turun
+   // Fib 0.786   = turun
+   // Fib -0.272  = naik di atas Swing High
+   //===============================================================
+
    if(trend == TREND_UP)
    {
       return
@@ -313,10 +416,18 @@ double FibPrice(
          (range * level);
    }
 
-   // SELL:
-   // 0 = swing low
-   // level positif = naik
-   // level negatif = turun di bawah swing low
+
+   //===============================================================
+   // SELL
+   //
+   // Fib 0       = Swing Low
+   // Fib 0.236   = naik
+   // Fib 0.382   = naik
+   // Fib 0.618   = naik
+   // Fib 0.786   = naik
+   // Fib -0.272  = turun di bawah Swing Low
+   //===============================================================
+
    if(trend == TREND_DOWN)
    {
       return
@@ -324,12 +435,15 @@ double FibPrice(
          (range * level);
    }
 
+
    return 0;
 }
 
+
 //==================================================================//
-// HITUNG ZONE
+// HITUNG ZONA
 //==================================================================//
+
 void GetZone(
    ZoneTrend trend,
    double swingHigh,
@@ -340,7 +454,7 @@ void GetZone(
    double &zoneHigh
 )
 {
-   double p1 =
+   double price1 =
       FibPrice(
          trend,
          swingHigh,
@@ -348,7 +462,8 @@ void GetZone(
          levelStart
       );
 
-   double p2 =
+
+   double price2 =
       FibPrice(
          trend,
          swingHigh,
@@ -356,16 +471,26 @@ void GetZone(
          levelEnd
       );
 
+
    zoneLow =
-      MathMin(p1, p2);
+      MathMin(
+         price1,
+         price2
+      );
+
 
    zoneHigh =
-      MathMax(p1, p2);
+      MathMax(
+         price1,
+         price2
+      );
 }
 
+
 //==================================================================//
-// HARGA MASUK ZONE
+// CEK HARGA DI DALAM ZONE
 //==================================================================//
+
 bool PriceInZone(
    double price,
    double zoneLow,
@@ -377,211 +502,182 @@ bool PriceInZone(
       price <= zoneHigh;
 }
 
+
 //==================================================================//
-// CEK REJECTION DI SATU TIMEFRAME + SHIFT TERTENTU
-// shift = 1  -> candle terakhir yang SUDAH close
-// shift = 0  -> candle yang SEDANG berjalan (belum close)
+// REJECTION M15
+//
+// SHIFT 1 = candle M15 terakhir yang SUDAH CLOSE
 //==================================================================//
-bool CheckRejectionTF(
+
+bool CheckRejectionM15(
    bool forBuy,
-   ENUM_TIMEFRAMES tf,
-   int shift,
    double zoneLow,
    double zoneHigh,
-   datetime &candleTimeOut
+   datetime &rejectionTime
 )
 {
+   int shift = 1;
+
+
    datetime candleTime =
       iTime(
          _Symbol,
-         tf,
+         RejectionTF,
          shift
       );
+
 
    if(candleTime <= 0)
       return false;
 
-   double o = iOpen(_Symbol, tf, shift);
-   double c = iClose(_Symbol, tf, shift);
-   double h = iHigh(_Symbol, tf, shift);
-   double l = iLow(_Symbol, tf, shift);
 
-   double range = h - l;
+   double open =
+      iOpen(
+         _Symbol,
+         RejectionTF,
+         shift
+      );
+
+
+   double close =
+      iClose(
+         _Symbol,
+         RejectionTF,
+         shift
+      );
+
+
+   double high =
+      iHigh(
+         _Symbol,
+         RejectionTF,
+         shift
+      );
+
+
+   double low =
+      iLow(
+         _Symbol,
+         RejectionTF,
+         shift
+      );
+
+
+   double range =
+      high - low;
+
 
    if(range <= 0)
       return false;
 
-   // Candle harus menyentuh zone
+
+   //===============================================================
+   // CANDLE HARUS MENYENTUH ZONE
+   //===============================================================
+
    bool touchesZone =
-      h >= zoneLow &&
-      l <= zoneHigh;
+      high >= zoneLow &&
+      low <= zoneHigh;
+
 
    if(!touchesZone)
       return false;
 
+
    double lowerWick =
-      MathMin(o, c) - l;
+      MathMin(open, close) - low;
+
 
    double upperWick =
-      h - MathMax(o, c);
+      high - MathMax(open, close);
 
-   double body =
-      MathAbs(c - o);
 
-   if(body <= 0)
-      return false;
-
-   //==============================================================
+   //===============================================================
    // BUY REJECTION
-   //==============================================================
+   //
+   // Candle bullish
+   // Lower wick dominan
+   // Close berada di bagian atas candle
+   //===============================================================
+
    if(forBuy)
    {
       bool bullish =
-         c > o;
+         close > open;
 
-      bool lowerWickDominant =
+
+      bool lowerWickStrong =
          (lowerWick / range)
          >= RejectionWickRatio;
 
+
       bool closeStrong =
-         c >
-         (l + range * 0.50);
+         close >
+         (low + range * 0.50);
+
 
       if(
          bullish &&
-         lowerWickDominant &&
+         lowerWickStrong &&
          closeStrong
       )
       {
-         candleTimeOut = candleTime;
+         rejectionTime =
+            candleTime;
+
          return true;
       }
    }
 
-   //==============================================================
+
+   //===============================================================
    // SELL REJECTION
-   //==============================================================
-   else
+   //
+   // Candle bearish
+   // Upper wick dominan
+   // Close berada di bagian bawah candle
+   //===============================================================
+
+   if(!forBuy)
    {
       bool bearish =
-         c < o;
+         close < open;
 
-      bool upperWickDominant =
+
+      bool upperWickStrong =
          (upperWick / range)
          >= RejectionWickRatio;
 
+
       bool closeStrong =
-         c <
-         (l + range * 0.50);
+         close <
+         (low + range * 0.50);
+
 
       if(
          bearish &&
-         upperWickDominant &&
+         upperWickStrong &&
          closeStrong
       )
       {
-         candleTimeOut = candleTime;
+         rejectionTime =
+            candleTime;
+
          return true;
       }
    }
+
 
    return false;
 }
 
-//==================================================================//
-// REJECTION BERTINGKAT: M15 -> M30 -> H1
-// H1 dicek dari candle yang SEDANG berjalan (shift 0),
-// tidak menunggu candle close.
-//==================================================================//
-bool FindRejectionMultiTF(
-   bool forBuy,
-   double zoneLow,
-   double zoneHigh,
-   string &usedTF
-)
-{
-   datetime candleTime = 0;
-
-   //============================================================
-   // 1) M15 - candle sudah close
-   //============================================================
-   candleTime = 0;
-
-   if(
-      CheckRejectionTF(
-         forBuy,
-         RejectionTF_M15,
-         1,
-         zoneLow,
-         zoneHigh,
-         candleTime
-      )
-   )
-   {
-      if(candleTime != LastRejectionBarM15)
-      {
-         LastRejectionBarM15 = candleTime;
-         usedTF = "M15";
-         return true;
-      }
-   }
-
-   //============================================================
-   // 2) M30 - candle sudah close
-   //============================================================
-   candleTime = 0;
-
-   if(
-      CheckRejectionTF(
-         forBuy,
-         RejectionTF_M30,
-         1,
-         zoneLow,
-         zoneHigh,
-         candleTime
-      )
-   )
-   {
-      if(candleTime != LastRejectionBarM30)
-      {
-         LastRejectionBarM30 = candleTime;
-         usedTF = "M30";
-         return true;
-      }
-   }
-
-   //============================================================
-   // 3) H1 - candle SEDANG berjalan, tidak tunggu close
-   //============================================================
-   candleTime = 0;
-
-   if(
-      CheckRejectionTF(
-         forBuy,
-         RejectionTF_H1,
-         0,
-         zoneLow,
-         zoneHigh,
-         candleTime
-      )
-   )
-   {
-      if(candleTime != LastRejectionBarH1)
-      {
-         LastRejectionBarH1 = candleTime;
-         usedTF = "H1";
-         return true;
-      }
-   }
-
-   return false;
-}
 
 //==================================================================//
 // VALIDASI SL
 //==================================================================//
+
 bool IsValidSLDistance(
-   ENUM_ORDER_TYPE type,
+   ENUM_ORDER_TYPE orderType,
    double sl
 )
 {
@@ -591,11 +687,13 @@ bool IsValidSLDistance(
          SYMBOL_BID
       );
 
+
    double ask =
       SymbolInfoDouble(
          _Symbol,
          SYMBOL_ASK
       );
+
 
    long stopsLevel =
       SymbolInfoInteger(
@@ -603,33 +701,51 @@ bool IsValidSLDistance(
          SYMBOL_TRADE_STOPS_LEVEL
       );
 
-   double minimum =
+
+   double minimumDistance =
       stopsLevel * _Point;
 
-   if(type == ORDER_TYPE_BUY)
+
+   if(orderType == ORDER_TYPE_BUY)
    {
       if(sl >= bid)
          return false;
 
-      if(bid - sl < minimum)
+
+      if(
+         bid - sl
+         < minimumDistance
+      )
+      {
          return false;
+      }
    }
 
-   if(type == ORDER_TYPE_SELL)
+
+   if(orderType == ORDER_TYPE_SELL)
    {
       if(sl <= ask)
          return false;
 
-      if(sl - ask < minimum)
+
+      if(
+         sl - ask
+         < minimumDistance
+      )
+      {
          return false;
+      }
    }
+
 
    return true;
 }
 
+
 //==================================================================//
-// FILLING MODE
+// FILLING MODE BROKER
 //==================================================================//
+
 ENUM_ORDER_TYPE_FILLING GetFillingMode()
 {
    int filling =
@@ -638,35 +754,59 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode()
          SYMBOL_FILLING_MODE
       );
 
+
    if(
       (filling & SYMBOL_FILLING_FOK)
       == SYMBOL_FILLING_FOK
    )
+   {
       return ORDER_FILLING_FOK;
+   }
+
 
    if(
       (filling & SYMBOL_FILLING_IOC)
       == SYMBOL_FILLING_IOC
    )
+   {
       return ORDER_FILLING_IOC;
+   }
+
 
    return ORDER_FILLING_RETURN;
 }
 
+
 //==================================================================//
 // OPEN BUY
 //==================================================================//
+
 void OpenBuy(
    double swingHigh,
-   double swingLow,
-   string usedTF
+   double swingLow
 )
 {
+   double ask =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_ASK
+      );
+
+
+   //===============================================================
+   // SL = SWING LOW M30
+   //===============================================================
+
    double sl =
       NormalizeDouble(
          swingLow - SLBufferUSD,
          _Digits
       );
+
+
+   //===============================================================
+   // TP1 = FIB 0
+   //===============================================================
 
    double tp1 =
       FibPrice(
@@ -676,6 +816,11 @@ void OpenBuy(
          TP1Level
       );
 
+
+   //===============================================================
+   // TP2 = FIB -0.272
+   //===============================================================
+
    double tp2 =
       FibPrice(
          TREND_UP,
@@ -684,16 +829,13 @@ void OpenBuy(
          TP2Level
       );
 
-   double ask =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_ASK
-      );
 
-   if(!IsValidSLDistance(
-      ORDER_TYPE_BUY,
-      sl
-   ))
+   if(
+      !IsValidSLDistance(
+         ORDER_TYPE_BUY,
+         sl
+      )
+   )
    {
       Print(
          "BUY dibatalkan: SL tidak valid."
@@ -702,150 +844,218 @@ void OpenBuy(
       return;
    }
 
-   // TP2 harus berada di atas TP1
+
    if(tp2 <= tp1)
    {
       Print(
-         "BUY dibatalkan: TP2 tidak valid."
+         "BUY dibatalkan: TP2 salah."
       );
 
       return;
    }
 
+
+   //===============================================================
+   // REQUEST
+   //===============================================================
+
    MqlTradeRequest request;
+
    MqlTradeResult result;
 
+
    ZeroMemory(request);
+
    ZeroMemory(result);
+
 
    request.action =
       TRADE_ACTION_DEAL;
 
+
    request.symbol =
       _Symbol;
+
 
    request.volume =
       LotSize;
 
+
    request.type =
       ORDER_TYPE_BUY;
+
 
    request.price =
       ask;
 
-   // Tidak memasang TP broker.
-   // TP1 dan TP2 dikelola EA.
+
+   // TP dikelola EA
    request.tp = 0;
+
 
    request.sl =
       sl;
 
+
    request.deviation =
       Slippage;
+
 
    request.magic =
       MagicNumber;
 
+
    request.comment =
-      "Fibo-BUY-" + usedTF;
+      "Fibo-BUY";
+
 
    request.type_filling =
       GetFillingMode();
 
+
    ResetLastError();
 
-   if(!OrderSend(
-      request,
-      result
-   ))
+
+   if(
+      !OrderSend(
+         request,
+         result
+      )
+   )
    {
       Print(
-         "BUY gagal. Error = ",
+         "BUY gagal | Error = ",
          GetLastError()
       );
 
       return;
    }
 
+
    if(
-      result.retcode ==
-      TRADE_RETCODE_DONE ||
-      result.retcode ==
+      result.retcode !=
+      TRADE_RETCODE_DONE &&
+      result.retcode !=
       TRADE_RETCODE_PLACED
    )
    {
-      ActiveTrade.valid = true;
-
-      ActiveTrade.direction =
-         POSITION_TYPE_BUY;
-
-      ActiveTrade.swingHigh =
-         swingHigh;
-
-      ActiveTrade.swingLow =
-         swingLow;
-
-      ActiveTrade.tp1 =
-         tp1;
-
-      ActiveTrade.tp2 =
-         tp2;
-
-      ActiveTrade.initialSL =
-         sl;
-
-      ActiveTrade.tp1Reached =
-         false;
-
       Print(
-         "=============================="
+         "BUY ditolak broker | Retcode = ",
+         result.retcode
       );
 
-      Print(
-         "BUY OPEN | Rejection dari ",
-         usedTF
-      );
-
-      Print(
-         "Entry = ",
-         ask
-      );
-
-      Print(
-         "SL = ",
-         sl
-      );
-
-      Print(
-         "TP1 Fibo 0 = ",
-         tp1
-      );
-
-      Print(
-         "TP2 Fibo -0.272 = ",
-         tp2
-      );
-
-      Print(
-         "=============================="
-      );
+      return;
    }
+
+
+   //===============================================================
+   // SIMPAN DATA TRADE
+   //===============================================================
+
+   ActiveTrade.valid = true;
+
+   ActiveTrade.direction =
+      POSITION_TYPE_BUY;
+
+
+   ActiveTrade.swingHigh =
+      swingHigh;
+
+
+   ActiveTrade.swingLow =
+      swingLow;
+
+
+   ActiveTrade.tp1 =
+      tp1;
+
+
+   ActiveTrade.tp2 =
+      tp2;
+
+
+   ActiveTrade.initialSL =
+      sl;
+
+
+   ActiveTrade.tp1Reached =
+      false;
+
+
+   Print(
+      "================================"
+   );
+
+   Print(
+      "BUY OPEN"
+   );
+
+   Print(
+      "Entry = ",
+      ask
+   );
+
+   Print(
+      "Swing High = ",
+      swingHigh
+   );
+
+   Print(
+      "Swing Low = ",
+      swingLow
+   );
+
+   Print(
+      "SL = ",
+      sl
+   );
+
+   Print(
+      "TP1 Fib 0 = ",
+      tp1
+   );
+
+   Print(
+      "TP2 Fib -0.272 = ",
+      tp2
+   );
+
+   Print(
+      "================================"
+   );
 }
+
 
 //==================================================================//
 // OPEN SELL
 //==================================================================//
+
 void OpenSell(
    double swingHigh,
-   double swingLow,
-   string usedTF
+   double swingLow
 )
 {
+   double bid =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_BID
+      );
+
+
+   //===============================================================
+   // SL = SWING HIGH M30
+   //===============================================================
+
    double sl =
       NormalizeDouble(
          swingHigh + SLBufferUSD,
          _Digits
       );
+
+
+   //===============================================================
+   // TP1 = FIB 0
+   //===============================================================
 
    double tp1 =
       FibPrice(
@@ -855,6 +1065,11 @@ void OpenSell(
          TP1Level
       );
 
+
+   //===============================================================
+   // TP2 = FIB -0.272
+   //===============================================================
+
    double tp2 =
       FibPrice(
          TREND_DOWN,
@@ -863,16 +1078,13 @@ void OpenSell(
          TP2Level
       );
 
-   double bid =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_BID
-      );
 
-   if(!IsValidSLDistance(
-      ORDER_TYPE_SELL,
-      sl
-   ))
+   if(
+      !IsValidSLDistance(
+         ORDER_TYPE_SELL,
+         sl
+      )
+   )
    {
       Print(
          "SELL dibatalkan: SL tidak valid."
@@ -881,285 +1093,451 @@ void OpenSell(
       return;
    }
 
-   // Untuk SELL TP2 harus lebih rendah
+
    if(tp2 >= tp1)
    {
       Print(
-         "SELL dibatalkan: TP2 tidak valid."
+         "SELL dibatalkan: TP2 salah."
       );
 
       return;
    }
 
+
    MqlTradeRequest request;
+
    MqlTradeResult result;
 
+
    ZeroMemory(request);
+
    ZeroMemory(result);
+
 
    request.action =
       TRADE_ACTION_DEAL;
 
+
    request.symbol =
       _Symbol;
+
 
    request.volume =
       LotSize;
 
+
    request.type =
       ORDER_TYPE_SELL;
+
 
    request.price =
       bid;
 
-   request.sl =
-      sl;
 
    // TP dikelola EA
    request.tp = 0;
 
+
+   request.sl =
+      sl;
+
+
    request.deviation =
       Slippage;
+
 
    request.magic =
       MagicNumber;
 
+
    request.comment =
-      "Fibo-SELL-" + usedTF;
+      "Fibo-SELL";
+
 
    request.type_filling =
       GetFillingMode();
 
+
    ResetLastError();
 
-   if(!OrderSend(
-      request,
-      result
-   ))
+
+   if(
+      !OrderSend(
+         request,
+         result
+      )
+   )
    {
       Print(
-         "SELL gagal. Error = ",
+         "SELL gagal | Error = ",
          GetLastError()
       );
 
       return;
    }
 
+
    if(
-      result.retcode ==
-      TRADE_RETCODE_DONE ||
-      result.retcode ==
+      result.retcode !=
+      TRADE_RETCODE_DONE &&
+      result.retcode !=
       TRADE_RETCODE_PLACED
    )
    {
-      ActiveTrade.valid = true;
-
-      ActiveTrade.direction =
-         POSITION_TYPE_SELL;
-
-      ActiveTrade.swingHigh =
-         swingHigh;
-
-      ActiveTrade.swingLow =
-         swingLow;
-
-      ActiveTrade.tp1 =
-         tp1;
-
-      ActiveTrade.tp2 =
-         tp2;
-
-      ActiveTrade.initialSL =
-         sl;
-
-      ActiveTrade.tp1Reached =
-         false;
-
       Print(
-         "=============================="
+         "SELL ditolak broker | Retcode = ",
+         result.retcode
       );
 
-      Print(
-         "SELL OPEN | Rejection dari ",
-         usedTF
-      );
-
-      Print(
-         "Entry = ",
-         bid
-      );
-
-      Print(
-         "SL = ",
-         sl
-      );
-
-      Print(
-         "TP1 Fibo 0 = ",
-         tp1
-      );
-
-      Print(
-         "TP2 Fibo -0.272 = ",
-         tp2
-      );
-
-      Print(
-         "=============================="
-      );
+      return;
    }
+
+
+   //===============================================================
+   // SIMPAN DATA TRADE
+   //===============================================================
+
+   ActiveTrade.valid = true;
+
+   ActiveTrade.direction =
+      POSITION_TYPE_SELL;
+
+
+   ActiveTrade.swingHigh =
+      swingHigh;
+
+
+   ActiveTrade.swingLow =
+      swingLow;
+
+
+   ActiveTrade.tp1 =
+      tp1;
+
+
+   ActiveTrade.tp2 =
+      tp2;
+
+
+   ActiveTrade.initialSL =
+      sl;
+
+
+   ActiveTrade.tp1Reached =
+      false;
+
+
+   Print(
+      "================================"
+   );
+
+   Print(
+      "SELL OPEN"
+   );
+
+   Print(
+      "Entry = ",
+      bid
+   );
+
+   Print(
+      "Swing High = ",
+      swingHigh
+   );
+
+   Print(
+      "Swing Low = ",
+      swingLow
+   );
+
+   Print(
+      "SL = ",
+      sl
+   );
+
+   Print(
+      "TP1 Fib 0 = ",
+      tp1
+   );
+
+   Print(
+      "TP2 Fib -0.272 = ",
+      tp2
+   );
+
+   Print(
+      "================================"
+   );
 }
+
+
+//==================================================================//
+// MODIFY SL
+//==================================================================//
+
+bool ModifySL(
+   ulong ticket,
+   double newSL
+)
+{
+   if(
+      !PositionSelectByTicket(ticket)
+   )
+   {
+      return false;
+   }
+
+
+   MqlTradeRequest request;
+
+   MqlTradeResult result;
+
+
+   ZeroMemory(request);
+
+   ZeroMemory(result);
+
+
+   request.action =
+      TRADE_ACTION_SLTP;
+
+
+   request.position =
+      ticket;
+
+
+   request.symbol =
+      _Symbol;
+
+
+   request.sl =
+      NormalizeDouble(
+         newSL,
+         _Digits
+      );
+
+
+   request.tp = 0;
+
+
+   ResetLastError();
+
+
+   if(
+      !OrderSend(
+         request,
+         result
+      )
+   )
+   {
+      Print(
+         "Modify SL gagal | Error = ",
+         GetLastError()
+      );
+
+      return false;
+   }
+
+
+   if(
+      result.retcode !=
+      TRADE_RETCODE_DONE
+   )
+   {
+      Print(
+         "Modify SL ditolak | Retcode = ",
+         result.retcode
+      );
+
+      return false;
+   }
+
+
+   return true;
+}
+
 
 //==================================================================//
 // CLOSE POSITION
 //==================================================================//
+
 bool ClosePosition(
    ulong ticket
 )
 {
-   if(!PositionSelectByTicket(ticket))
+   if(
+      !PositionSelectByTicket(ticket)
+   )
+   {
       return false;
+   }
 
-   long type =
+
+   long positionType =
       PositionGetInteger(
          POSITION_TYPE
       );
+
 
    double volume =
       PositionGetDouble(
          POSITION_VOLUME
       );
 
-   double price;
-
-   ENUM_ORDER_TYPE orderType;
-
-   if(type == POSITION_TYPE_BUY)
-   {
-      price =
-         SymbolInfoDouble(
-            _Symbol,
-            SYMBOL_BID
-         );
-
-      orderType =
-         ORDER_TYPE_SELL;
-   }
-   else
-   {
-      price =
-         SymbolInfoDouble(
-            _Symbol,
-            SYMBOL_ASK
-         );
-
-      orderType =
-         ORDER_TYPE_BUY;
-   }
 
    MqlTradeRequest request;
+
    MqlTradeResult result;
 
+
    ZeroMemory(request);
+
    ZeroMemory(result);
+
 
    request.action =
       TRADE_ACTION_DEAL;
 
+
    request.position =
       ticket;
+
 
    request.symbol =
       _Symbol;
 
+
    request.volume =
       volume;
 
-   request.type =
-      orderType;
-
-   request.price =
-      price;
-
-   request.deviation =
-      Slippage;
 
    request.magic =
       MagicNumber;
 
+
+   request.deviation =
+      Slippage;
+
+
    request.type_filling =
       GetFillingMode();
 
+
+   if(
+      positionType ==
+      POSITION_TYPE_BUY
+   )
+   {
+      request.type =
+         ORDER_TYPE_SELL;
+
+
+      request.price =
+         SymbolInfoDouble(
+            _Symbol,
+            SYMBOL_BID
+         );
+   }
+   else
+   {
+      request.type =
+         ORDER_TYPE_BUY;
+
+
+      request.price =
+         SymbolInfoDouble(
+            _Symbol,
+            SYMBOL_ASK
+         );
+   }
+
+
    ResetLastError();
 
-   if(!OrderSend(
-      request,
-      result
-   ))
+
+   if(
+      !OrderSend(
+         request,
+         result
+      )
+   )
    {
       Print(
-         "Close position gagal. Error = ",
+         "Close posisi gagal | Error = ",
          GetLastError()
       );
 
       return false;
    }
 
+
    if(
-      result.retcode ==
+      result.retcode !=
       TRADE_RETCODE_DONE
    )
    {
       Print(
-         "POSITION CLOSED | TP2 / EXIT"
+         "Close posisi ditolak | Retcode = ",
+         result.retcode
       );
 
-      return true;
+      return false;
    }
 
-   Print(
-      "Close ditolak. Retcode = ",
-      result.retcode
-   );
 
-   return false;
+   return true;
 }
 
-//==================================================================//
-// TP1 + TP2 + TRAILING
-//==================================================================//
-void ManageActiveTrade()
-{
-   if(!ActiveTrade.valid)
-      return;
 
-   for(int i = PositionsTotal() - 1;
-       i >= 0;
-       i--)
+//==================================================================//
+// KELOLA TP1 / TP2 / TRAILING
+//==================================================================//
+
+void ManageTrade()
+{
+   for(
+      int i = PositionsTotal() - 1;
+      i >= 0;
+      i--
+   )
    {
       ulong ticket =
          PositionGetTicket(i);
 
+
       if(ticket == 0)
          continue;
 
-      if(!PositionSelectByTicket(ticket))
+
+      if(
+         !PositionSelectByTicket(ticket)
+      )
          continue;
 
-      if(PositionGetString(
-         POSITION_SYMBOL)
-         != _Symbol)
+
+      if(
+         PositionGetString(
+            POSITION_SYMBOL
+         )
+         != _Symbol
+      )
          continue;
 
-      if((ulong)PositionGetInteger(
-         POSITION_MAGIC)
-         != MagicNumber)
+
+      if(
+         (ulong)PositionGetInteger(
+            POSITION_MAGIC
+         )
+         != MagicNumber
+      )
          continue;
 
-      long type =
+
+      long positionType =
          PositionGetInteger(
             POSITION_TYPE
          );
+
 
       double bid =
          SymbolInfoDouble(
@@ -1167,28 +1545,43 @@ void ManageActiveTrade()
             SYMBOL_BID
          );
 
+
       double ask =
          SymbolInfoDouble(
             _Symbol,
             SYMBOL_ASK
          );
 
+
+      double currentSL =
+         PositionGetDouble(
+            POSITION_SL
+         );
+
+
+      //============================================================
+      // Pastikan data trade tersedia
+      //============================================================
+
+      if(!ActiveTrade.valid)
+      {
+         continue;
+      }
+
+
       //============================================================
       // BUY
       //============================================================
-      if(type == POSITION_TYPE_BUY)
+
+      if(
+         positionType ==
+         POSITION_TYPE_BUY
+      )
       {
-         // TP2
-         if(bid >= ActiveTrade.tp2)
-         {
-            ClosePosition(ticket);
+         //=========================================================
+         // TP1 TERSENTUH
+         //=========================================================
 
-            ResetTradeData();
-
-            return;
-         }
-
-         // TP1 tercapai
          if(
             !ActiveTrade.tp1Reached &&
             bid >= ActiveTrade.tp1
@@ -1196,8 +1589,9 @@ void ManageActiveTrade()
          {
             ActiveTrade.tp1Reached = true;
 
+
             Print(
-               "BUY mencapai TP1 FIBO 0."
+               "BUY mencapai TP1 Fib 0."
             );
 
             Print(
@@ -1207,61 +1601,96 @@ void ManageActiveTrade()
             );
          }
 
-         // Trailing hanya setelah TP1
+
+         //=========================================================
+         // TP2
+         //=========================================================
+
          if(
-            ActiveTrade.tp1Reached &&
-            UseTP1Trailing
+            bid >= ActiveTrade.tp2
+         )
+         {
+            Print(
+               "BUY mencapai TP2 Fib -0.272."
+            );
+
+
+            if(
+               ClosePosition(ticket)
+            )
+            {
+               ResetTradeData();
+            }
+
+
+            continue;
+         }
+
+
+         //=========================================================
+         // TRAILING SETELAH TP1
+         //=========================================================
+
+         if(
+            UseTP1Trailing &&
+            ActiveTrade.tp1Reached
          )
          {
             double newSL =
+               bid -
+               TP1TrailingDistanceUSD;
+
+
+            newSL =
                NormalizeDouble(
-                  bid -
-                  TP1TrailingDistanceUSD,
+                  newSL,
                   _Digits
                );
 
-            double oldSL =
-               PositionGetDouble(
-                  POSITION_SL
-               );
 
             if(
-               IsValidSLDistance(
-                  ORDER_TYPE_BUY,
-                  newSL
-               )
+               newSL > currentSL &&
+               newSL < bid
             )
             {
                if(
-                  oldSL == 0 ||
-                  newSL > oldSL
+                  IsValidSLDistance(
+                     ORDER_TYPE_BUY,
+                     newSL
+                  )
                )
                {
-                  ModifySL(
-                     ticket,
-                     newSL
-                  );
+                  if(
+                     ModifySL(
+                        ticket,
+                        newSL
+                     )
+                  )
+                  {
+                     Print(
+                        "BUY TRAILING SL = ",
+                        newSL
+                     );
+                  }
                }
             }
          }
       }
 
+
       //============================================================
       // SELL
       //============================================================
-      if(type == POSITION_TYPE_SELL)
+
+      if(
+         positionType ==
+         POSITION_TYPE_SELL
+      )
       {
-         // TP2
-         if(ask <= ActiveTrade.tp2)
-         {
-            ClosePosition(ticket);
+         //=========================================================
+         // TP1 TERSENTUH
+         //=========================================================
 
-            ResetTradeData();
-
-            return;
-         }
-
-         // TP1
          if(
             !ActiveTrade.tp1Reached &&
             ask <= ActiveTrade.tp1
@@ -1269,8 +1698,9 @@ void ManageActiveTrade()
          {
             ActiveTrade.tp1Reached = true;
 
+
             Print(
-               "SELL mencapai TP1 FIBO 0."
+               "SELL mencapai TP1 Fib 0."
             );
 
             Print(
@@ -1280,40 +1710,81 @@ void ManageActiveTrade()
             );
          }
 
-         // Trailing setelah TP1
+
+         //=========================================================
+         // TP2
+         //=========================================================
+
          if(
-            ActiveTrade.tp1Reached &&
-            UseTP1Trailing
+            ask <= ActiveTrade.tp2
+         )
+         {
+            Print(
+               "SELL mencapai TP2 Fib -0.272."
+            );
+
+
+            if(
+               ClosePosition(ticket)
+            )
+            {
+               ResetTradeData();
+            }
+
+
+            continue;
+         }
+
+
+         //=========================================================
+         // TRAILING SETELAH TP1
+         //=========================================================
+
+         if(
+            UseTP1Trailing &&
+            ActiveTrade.tp1Reached
          )
          {
             double newSL =
+               ask +
+               TP1TrailingDistanceUSD;
+
+
+            newSL =
                NormalizeDouble(
-                  ask +
-                  TP1TrailingDistanceUSD,
+                  newSL,
                   _Digits
                );
 
-            double oldSL =
-               PositionGetDouble(
-                  POSITION_SL
-               );
 
             if(
-               IsValidSLDistance(
-                  ORDER_TYPE_SELL,
-                  newSL
+               (
+                  currentSL == 0 ||
+                  newSL < currentSL
                )
+               &&
+               newSL > ask
             )
             {
                if(
-                  oldSL == 0 ||
-                  newSL < oldSL
+                  IsValidSLDistance(
+                     ORDER_TYPE_SELL,
+                     newSL
+                  )
                )
                {
-                  ModifySL(
-                     ticket,
-                     newSL
-                  );
+                  if(
+                     ModifySL(
+                        ticket,
+                        newSL
+                     )
+                  )
+                  {
+                     Print(
+                        "SELL TRAILING SL = ",
+                        newSL
+                     );
+                  }
                }
             }
          }
@@ -1321,82 +1792,47 @@ void ManageActiveTrade()
    }
 }
 
-//==================================================================//
-// MODIFY SL
-//==================================================================//
-void ModifySL(
-   ulong ticket,
-   double newSL
-)
-{
-   if(!PositionSelectByTicket(ticket))
-      return;
-
-   MqlTradeRequest request;
-   MqlTradeResult result;
-
-   ZeroMemory(request);
-   ZeroMemory(result);
-
-   request.action =
-      TRADE_ACTION_SLTP;
-
-   request.position =
-      ticket;
-
-   request.symbol =
-      _Symbol;
-
-   request.sl =
-      newSL;
-
-   request.tp =
-      PositionGetDouble(
-         POSITION_TP
-      );
-
-   ResetLastError();
-
-   if(!OrderSend(
-      request,
-      result
-   ))
-   {
-      Print(
-         "Modify SL gagal | Error = ",
-         GetLastError()
-      );
-   }
-}
 
 //==================================================================//
-// API
+// CEK API START / STOP
 //==================================================================//
+
 void CheckApiStatus()
 {
-   if(ApiStatusUrl == "")
+   if(
+      ApiStatusUrl == ""
+   )
+   {
       return;
+   }
+
 
    if(
-      TimeCurrent() -
-      LastApiCheck <
-      ApiCheckSeconds
+      TimeCurrent() - LastApiCheck
+      < ApiCheckSeconds
    )
+   {
       return;
+   }
+
 
    LastApiCheck =
       TimeCurrent();
 
+
    string headers = "";
 
    char postData[];
+
    char result[];
 
    string resultHeaders;
 
+
    ResetLastError();
 
-   int response =
+
+   int responseCode =
       WebRequest(
          "GET",
          ApiStatusUrl,
@@ -1407,46 +1843,99 @@ void CheckApiStatus()
          resultHeaders
       );
 
-   if(response == -1)
+
+   if(responseCode == -1)
    {
       Print(
-         "API gagal | Error = ",
+         "API ERROR = ",
          GetLastError()
       );
 
       return;
    }
 
-   string text =
+
+   string response =
       CharArrayToString(
          result
       );
 
-   // Cek longgar (mirip logika di app Kodular): cukup cari
-   // kata kuncinya, tidak terpaku pada format JSON yang kaku
-   if(StringFind(text, "RUNNING") >= 0)
-   {
-      BotEnabled = true;
-      return;
-   }
-
-   if(StringFind(text, "STOPPED") >= 0)
-   {
-      BotEnabled = false;
-      return;
-   }
 
    Print(
-      "API response tidak dikenali: ",
-      text
+      "API STATUS = ",
+      response
+   );
+
+
+   //===============================================================
+   // RUNNING
+   //===============================================================
+
+   if(
+      StringFind(
+         response,
+         "\"status\":\"RUNNING\""
+      ) >= 0
+      ||
+      StringFind(
+         response,
+         "\"running\":true"
+      ) >= 0
+      ||
+      StringFind(
+         response,
+         "\"running\": true"
+      ) >= 0
+   )
+   {
+      BotEnabled = true;
+
+      return;
+   }
+
+
+   //===============================================================
+   // STOPPED
+   //===============================================================
+
+   if(
+      StringFind(
+         response,
+         "\"status\":\"STOPPED\""
+      ) >= 0
+      ||
+      StringFind(
+         response,
+         "\"running\":false"
+      ) >= 0
+      ||
+      StringFind(
+         response,
+         "\"running\": false"
+      ) >= 0
+   )
+   {
+      BotEnabled = false;
+
+      return;
+   }
+
+
+   Print(
+      "API response tidak dikenali."
    );
 }
+
 
 //==================================================================//
 // INIT
 //==================================================================//
+
 int OnInit()
 {
+   ResetTradeData();
+
+
    LastEntryBar =
       iTime(
          _Symbol,
@@ -1454,117 +1943,153 @@ int OnInit()
          0
       );
 
-   ResetTradeData();
 
    CheckApiStatus();
 
+
    Print(
       "======================================"
    );
 
-   Print(
-      "GoldFiboRejection v5.00 AKTIF"
-   );
 
    Print(
-      "Swing/Fibo = M30"
+      "GoldFiboRejection FINAL AKTIF"
    );
 
-   Print(
-      "Rejection  = M15 -> M30 -> H1 (H1 tanpa tunggu close)"
-   );
 
    Print(
-      "Entry      = M5"
+      "Symbol       = ",
+      _Symbol
    );
 
-   Print(
-      "TP1        = Fibo 0.000"
-   );
 
    Print(
-      "TP2        = Fibo -0.272"
+      "Swing TF     = M30"
    );
 
-   Print(
-      "Trailing   = $",
-      TP1TrailingDistanceUSD,
-      " setelah TP1"
-   );
 
    Print(
-      "API = ",
+      "Rejection TF = M15"
+   );
+
+
+   Print(
+      "Entry TF     = M5"
+   );
+
+
+   Print(
+      "Zone 1       = 0.236 - 0.382"
+   );
+
+
+   Print(
+      "Zone 2       = 0.618 - 0.786"
+   );
+
+
+   Print(
+      "TP1          = Fib 0"
+   );
+
+
+   Print(
+      "TP2          = Fib -0.272"
+   );
+
+
+   Print(
+      "Trailing     = $",
+      TP1TrailingDistanceUSD
+   );
+
+
+   Print(
+      "API          = ",
       ApiStatusUrl
    );
 
+
    Print(
       "======================================"
    );
+
 
    return INIT_SUCCEEDED;
 }
 
-//==================================================================//
-// DEINIT
-//==================================================================//
-void OnDeinit(
-   const int reason
-)
-{
-   Print(
-      "GoldFiboRejection dihentikan."
-   );
-}
 
 //==================================================================//
-// TICK
+// ON TICK
 //==================================================================//
+
 void OnTick()
 {
    //===============================================================
-   // API
+   // CEK API
    //===============================================================
+
    CheckApiStatus();
 
+
    //===============================================================
-   // MANAGE POSISI YANG SUDAH TERBUKA
+   // KELOLA POSISI YANG SEDANG RUNNING
+   // Tetap dikelola walaupun Bot STOP
    //===============================================================
-   if(CountOpenPositions() > 0)
+
+   if(
+      CountOpenPositions() > 0
+   )
    {
-      ManageActiveTrade();
+      ManageTrade();
+   }
+
+
+   //===============================================================
+   // KALAU BOT STOP
+   // Jangan entry baru
+   //===============================================================
+
+   if(!BotEnabled)
+   {
       return;
    }
 
-   // Kalau posisi sudah tidak ada
-   if(ActiveTrade.valid)
-      ResetTradeData();
-
-   //===============================================================
-   // API STOP
-   //===============================================================
-   if(!BotEnabled)
-      return;
 
    //===============================================================
    // ENTRY HANYA PADA BAR M5 BARU
    //===============================================================
+
    if(!IsNewEntryBar())
+   {
       return;
+   }
+
 
    //===============================================================
-   // MAKSIMAL 1 POSISI
+   // HANYA 1 POSISI
    //===============================================================
-   if(CountOpenPositions() >= 1)
+
+   if(
+      CountOpenPositions() > 0
+   )
+   {
       return;
+   }
+
 
    //===============================================================
-   // SWING M30
+   // CARI SWING M30
    //===============================================================
-   double swingHigh;
-   double swingLow;
 
-   datetime highTime;
-   datetime lowTime;
+   double swingHigh = 0;
+
+   double swingLow = 0;
+
+   datetime highTime = 0;
+
+   datetime lowTime = 0;
+
 
    ZoneTrend trend =
       GetSwingTrend(
@@ -1574,14 +2099,24 @@ void OnTick()
          lowTime
       );
 
-   if(trend == TREND_NONE)
+
+   if(
+      trend ==
+      TREND_NONE
+   )
+   {
       return;
+   }
+
 
    //===============================================================
-   // ZONE 1
+   // HITUNG ZONE 1
    //===============================================================
-   double z1Low;
-   double z1High;
+
+   double zone1Low = 0;
+
+   double zone1High = 0;
+
 
    GetZone(
       trend,
@@ -1589,15 +2124,19 @@ void OnTick()
       swingLow,
       Zone1Start,
       Zone1End,
-      z1Low,
-      z1High
+      zone1Low,
+      zone1High
    );
 
+
    //===============================================================
-   // ZONE 2
+   // HITUNG ZONE 2
    //===============================================================
-   double z2Low;
-   double z2High;
+
+   double zone2Low = 0;
+
+   double zone2High = 0;
+
 
    GetZone(
       trend,
@@ -1605,9 +2144,14 @@ void OnTick()
       swingLow,
       Zone2Start,
       Zone2End,
-      z2Low,
-      z2High
+      zone2Low,
+      zone2High
    );
+
+
+   //===============================================================
+   // HARGA SEKARANG
+   //===============================================================
 
    double price =
       SymbolInfoDouble(
@@ -1615,148 +2159,267 @@ void OnTick()
          SYMBOL_BID
       );
 
+
+   //===============================================================
+   // CEK ZONE
+   //===============================================================
+
+   bool inZone1 =
+      PriceInZone(
+         price,
+         zone1Low,
+         zone1High
+      );
+
+
+   bool inZone2 =
+      PriceInZone(
+         price,
+         zone2Low,
+         zone2High
+      );
+
+
+   //===============================================================
+   // ZONE AKTIF
+   //
+   // Jika sudah masuk Zone 2:
+   // gunakan Zone 2.
+   //
+   // Kalau baru di Zone 1:
+   // gunakan Zone 1.
+   //===============================================================
+
+   double activeZoneLow = 0;
+
+   double activeZoneHigh = 0;
+
+
+   bool validZone = false;
+
+
+   if(inZone2)
+   {
+      activeZoneLow =
+         zone2Low;
+
+
+      activeZoneHigh =
+         zone2High;
+
+
+      validZone = true;
+
+
+      Print(
+         "Harga berada di ZONE 2."
+      );
+   }
+   else
+   if(inZone1)
+   {
+      activeZoneLow =
+         zone1Low;
+
+
+      activeZoneHigh =
+         zone1High;
+
+
+      validZone = true;
+
+
+      Print(
+         "Harga berada di ZONE 1."
+      );
+   }
+
+
+   if(!validZone)
+   {
+      return;
+   }
+
+
    //===============================================================
    // BUY
    //===============================================================
-   if(trend == TREND_UP)
+
+   if(
+      trend ==
+      TREND_UP
+   )
    {
-      bool inZone1 =
-         PriceInZone(
-            price,
-            z1Low,
-            z1High
+      datetime rejectionTime = 0;
+
+
+      bool rejection =
+         CheckRejectionM15(
+            true,
+            activeZoneLow,
+            activeZoneHigh,
+            rejectionTime
          );
 
-      bool inZone2 =
-         PriceInZone(
-            price,
-            z2Low,
-            z2High
-         );
 
-      //============================================================
-      // BUY ZONE 1
-      //============================================================
-      if(inZone1)
+      if(!rejection)
       {
-         string usedTF = "";
-
-         if(
-            FindRejectionMultiTF(
-               true,
-               z1Low,
-               z1High,
-               usedTF
-            )
-         )
-         {
-            OpenBuy(
-               swingHigh,
-               swingLow,
-               usedTF
-            );
-         }
-
          return;
       }
 
-      //============================================================
-      // BUY ZONE 2
-      //============================================================
-      if(inZone2)
+
+      // Jangan gunakan candle rejection yang sama berkali-kali
+      if(
+         rejectionTime ==
+         LastRejectionBar
+      )
       {
-         string usedTF = "";
-
-         if(
-            FindRejectionMultiTF(
-               true,
-               z2Low,
-               z2High,
-               usedTF
-            )
-         )
-         {
-            OpenBuy(
-               swingHigh,
-               swingLow,
-               usedTF
-            );
-         }
-
          return;
       }
+
+
+      LastRejectionBar =
+         rejectionTime;
+
+
+      Print(
+         "================================"
+      );
+
+
+      Print(
+         "BUY REJECTION VALID"
+      );
+
+
+      Print(
+         "TF = M15"
+      );
+
+
+      Print(
+         "Price = ",
+         price
+      );
+
+
+      Print(
+         "Zone Low = ",
+         activeZoneLow
+      );
+
+
+      Print(
+         "Zone High = ",
+         activeZoneHigh
+      );
+
+
+      Print(
+         "================================"
+      );
+
+
+      OpenBuy(
+         swingHigh,
+         swingLow
+      );
+
+
+      return;
    }
+
 
    //===============================================================
    // SELL
    //===============================================================
-   if(trend == TREND_DOWN)
+
+   if(
+      trend ==
+      TREND_DOWN
+   )
    {
-      bool inZone1 =
-         PriceInZone(
-            price,
-            z1Low,
-            z1High
+      datetime rejectionTime = 0;
+
+
+      bool rejection =
+         CheckRejectionM15(
+            false,
+            activeZoneLow,
+            activeZoneHigh,
+            rejectionTime
          );
 
-      bool inZone2 =
-         PriceInZone(
-            price,
-            z2Low,
-            z2High
-         );
 
-      //============================================================
-      // SELL ZONE 1
-      //============================================================
-      if(inZone1)
+      if(!rejection)
       {
-         string usedTF = "";
-
-         if(
-            FindRejectionMultiTF(
-               false,
-               z1Low,
-               z1High,
-               usedTF
-            )
-         )
-         {
-            OpenSell(
-               swingHigh,
-               swingLow,
-               usedTF
-            );
-         }
-
          return;
       }
 
-      //============================================================
-      // SELL ZONE 2
-      //============================================================
-      if(inZone2)
+
+      // Jangan gunakan candle rejection yang sama berkali-kali
+      if(
+         rejectionTime ==
+         LastRejectionBar
+      )
       {
-         string usedTF = "";
-
-         if(
-            FindRejectionMultiTF(
-               false,
-               z2Low,
-               z2High,
-               usedTF
-            )
-         )
-         {
-            OpenSell(
-               swingHigh,
-               swingLow,
-               usedTF
-            );
-         }
-
          return;
       }
+
+
+      LastRejectionBar =
+         rejectionTime;
+
+
+      Print(
+         "================================"
+      );
+
+
+      Print(
+         "SELL REJECTION VALID"
+      );
+
+
+      Print(
+         "TF = M15"
+      );
+
+
+      Print(
+         "Price = ",
+         price
+      );
+
+
+      Print(
+         "Zone Low = ",
+         activeZoneLow
+      );
+
+
+      Print(
+         "Zone High = ",
+         activeZoneHigh
+      );
+
+
+      Print(
+         "================================"
+      );
+
+
+      OpenSell(
+         swingHigh,
+         swingLow
+      );
+
+
+      return;
    }
 }
+
+
+//+------------------------------------------------------------------+
+//| END                                                              |
 //+------------------------------------------------------------------+
