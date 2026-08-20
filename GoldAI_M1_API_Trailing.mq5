@@ -1,9 +1,9 @@
 //+------------------------------------------------------------------+
 //| GoldAI_M1_API_Trailing.mq5                                       |
-//| XAUUSD M1 - 3 Candle + Initial SL + Trailing + API START/STOP    |
+//| XAUUSD M1 - 3 Candle + Initial SL + Trailing (basis dolar) + API |
 //+------------------------------------------------------------------+
 #property copyright "Custom EA"
-#property version   "1.41"
+#property version   "1.42"
 #property strict
 
 //==================================================================//
@@ -13,20 +13,16 @@
 //--- LOT
 input double LotSize = 0.01;
 
-//--- INITIAL STOP LOSS
+//--- INITIAL STOP LOSS (dalam dolar pergerakan harga)
 // BUY  : Entry 3998.00 -> SL 3996.00
 // SELL : Entry 3998.00 -> SL 4000.00
 input double InitialSLDistance = 2.00;
 
-//--- TRAILING
-// 50 pips = $0.50
-// 5 pips  = $0.05
-input double TrailStart_Pips    = 50.0;
-input double TrailDistance_Pips = 5.0;
-
-//--- GOLD PIP
-// 1 pip = $0.01
-input double PipSize = 0.01;
+//--- TRAILING (dalam dolar pergerakan harga)
+// Trailing aktif begitu profit floating >= TrailStart_USD
+// SL akan selalu berjarak TrailDistance_USD di belakang harga
+input double TrailStart_USD    = 5.0;
+input double TrailDistance_USD = 1.0;
 
 //--- TRADE
 input ulong MagicNumber = 20260819;
@@ -133,9 +129,6 @@ int Check3CandleSignal()
 
 //==================================================================//
 // CEK API START / STOP
-//
-// FIX: API kamu balikin format {"status":"RUNNING"} / {"status":"STOPPED"}
-// bukan {"running":true/false} - jadi dicek keduanya biar aman
 //==================================================================//
 
 void CheckApiStatus()
@@ -176,7 +169,6 @@ void CheckApiStatus()
 
    Print("API Response: ", response);
 
-   //--- API RUNNING (dukung format "status":"RUNNING" dan "running":true)
    if(
       StringFind(response, "\"status\":\"RUNNING\"") >= 0 ||
       StringFind(response, "\"running\":true")        >= 0 ||
@@ -190,7 +182,6 @@ void CheckApiStatus()
       return;
    }
 
-   //--- API STOPPED (dukung format "status":"STOPPED" dan "running":false)
    if(
       StringFind(response, "\"status\":\"STOPPED\"") >= 0 ||
       StringFind(response, "\"running\":false")        >= 0 ||
@@ -237,30 +228,22 @@ bool IsValidSLDistance(ENUM_ORDER_TYPE orderType, double sl)
 
 
 //==================================================================//
-// FIX: TENTUKAN FILLING MODE YANG BENAR-BENAR DIDUKUNG BROKER
-//
-// SYMBOL_FILLING_MODE adalah BITMASK, tidak boleh langsung di-cast
-// ke ENUM_ORDER_TYPE_FILLING. Ini penyebab error
-// "Unsupported filling mode" di Exness.
+// TENTUKAN FILLING MODE YANG DIDUKUNG BROKER
 //==================================================================//
 
 ENUM_ORDER_TYPE_FILLING GetFillingMode()
 {
    int filling = (int)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
 
-   //--- broker tidak mendeklarasikan mode -> default paling umum
    if(filling == 0)
       return ORDER_FILLING_IOC;
 
-   //--- FOK didukung
    if((filling & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
       return ORDER_FILLING_FOK;
 
-   //--- IOC didukung
    if((filling & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
       return ORDER_FILLING_IOC;
 
-   //--- fallback terakhir
    return ORDER_FILLING_RETURN;
 }
 
@@ -298,7 +281,7 @@ void OpenBuy()
    request.deviation     = Slippage;
    request.magic         = MagicNumber;
    request.comment       = "3Candle-BUY";
-   request.type_filling  = GetFillingMode(); // FIX
+   request.type_filling  = GetFillingMode();
 
    ResetLastError();
 
@@ -351,7 +334,7 @@ void OpenSell()
    request.deviation     = Slippage;
    request.magic         = MagicNumber;
    request.comment       = "3Candle-SELL";
-   request.type_filling  = GetFillingMode(); // FIX
+   request.type_filling  = GetFillingMode();
 
    ResetLastError();
 
@@ -372,11 +355,17 @@ void OpenSell()
 
 
 //==================================================================//
-// TRAILING STOP
+// TRAILING STOP (BERBASIS PROFIT DOLAR)
+//
+// Trailing aktif setelah profit floating >= TrailStart_USD
+// SL selalu digeser supaya berjarak TrailDistance_USD dari harga
 //==================================================================//
 
 void TrailPositions()
 {
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize   = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -393,20 +382,26 @@ void TrailPositions()
       if(PositionGetInteger(POSITION_MAGIC) != (long)MagicNumber)
          continue;
 
-      long posType   = PositionGetInteger(POSITION_TYPE);
-      double posOpen  = PositionGetDouble(POSITION_PRICE_OPEN);
-      double posSL    = PositionGetDouble(POSITION_SL);
-      double bid       = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double ask       = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      long   posType   = PositionGetInteger(POSITION_TYPE);
+      double posOpen    = PositionGetDouble(POSITION_PRICE_OPEN);
+      double posSL       = PositionGetDouble(POSITION_SL);
+      double posVolume  = PositionGetDouble(POSITION_VOLUME);
+      double bid          = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask          = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+      //--- profit floating dalam DOLAR (pakai profit riil dari posisi, paling akurat)
+      double profitUSD = PositionGetDouble(POSITION_PROFIT);
+
+      //--- konversi TrailDistance_USD ke jarak HARGA (bukan uang) untuk XAUUSD
+      // priceDistance = (TrailDistance_USD / tickValue) * tickSize / volume
+      double priceDistance = (TrailDistance_USD / (tickValue * posVolume)) * tickSize;
 
       if(posType == POSITION_TYPE_BUY)
       {
-         double profitPips = (bid - posOpen) / PipSize;
-
-         if(profitPips < TrailStart_Pips)
+         if(profitUSD < TrailStart_USD)
             continue;
 
-         double newSL = bid - (TrailDistance_Pips * PipSize);
+         double newSL = bid - priceDistance;
          newSL = NormalizeDouble(newSL, _Digits);
 
          if(!IsValidSLDistance(ORDER_TYPE_BUY, newSL))
@@ -417,12 +412,10 @@ void TrailPositions()
       }
       else if(posType == POSITION_TYPE_SELL)
       {
-         double profitPips = (posOpen - ask) / PipSize;
-
-         if(profitPips < TrailStart_Pips)
+         if(profitUSD < TrailStart_USD)
             continue;
 
-         double newSL = ask + (TrailDistance_Pips * PipSize);
+         double newSL = ask + priceDistance;
          newSL = NormalizeDouble(newSL, _Digits);
 
          if(!IsValidSLDistance(ORDER_TYPE_SELL, newSL))
@@ -490,9 +483,8 @@ int OnInit()
    Print("Timeframe = M1");
    Print("Lot = ", LotSize);
    Print("Initial SL = $", InitialSLDistance);
-   Print("Trailing Start = ", TrailStart_Pips, " pips ($", TrailStart_Pips * PipSize, ")");
-   Print("Trailing Distance = ", TrailDistance_Pips, " pips ($", TrailDistance_Pips * PipSize, ")");
-   Print("PipSize = ", PipSize);
+   Print("Trailing Start = $", TrailStart_USD);
+   Print("Trailing Distance = $", TrailDistance_USD);
    Print("Filling Mode terdeteksi = ", EnumToString(GetFillingMode()));
    Print("==========================================");
 
