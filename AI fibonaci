@@ -1072,4 +1072,628 @@ void ManageActiveTrade()
          != _Symbol)
          continue;
 
-      if((ulong)Posit
+      if((ulong)PositionGetInteger(
+         POSITION_MAGIC)
+         != MagicNumber)
+         continue;
+
+      long type =
+         PositionGetInteger(
+            POSITION_TYPE
+         );
+
+      double bid =
+         SymbolInfoDouble(
+            _Symbol,
+            SYMBOL_BID
+         );
+
+      double ask =
+         SymbolInfoDouble(
+            _Symbol,
+            SYMBOL_ASK
+         );
+
+      //============================================================
+      // BUY
+      //============================================================
+      if(type == POSITION_TYPE_BUY)
+      {
+         // TP2
+         if(bid >= ActiveTrade.tp2)
+         {
+            ClosePosition(ticket);
+
+            ResetTradeData();
+
+            return;
+         }
+
+         // TP1 tercapai
+         if(
+            !ActiveTrade.tp1Reached &&
+            bid >= ActiveTrade.tp1
+         )
+         {
+            ActiveTrade.tp1Reached = true;
+
+            Print(
+               "BUY mencapai TP1 FIBO 0."
+            );
+
+            Print(
+               "Trailing $",
+               TP1TrailingDistanceUSD,
+               " AKTIF."
+            );
+         }
+
+         // Trailing hanya setelah TP1
+         if(
+            ActiveTrade.tp1Reached &&
+            UseTP1Trailing
+         )
+         {
+            double newSL =
+               NormalizeDouble(
+                  bid -
+                  TP1TrailingDistanceUSD,
+                  _Digits
+               );
+
+            double oldSL =
+               PositionGetDouble(
+                  POSITION_SL
+               );
+
+            if(
+               IsValidSLDistance(
+                  ORDER_TYPE_BUY,
+                  newSL
+               )
+            )
+            {
+               if(
+                  oldSL == 0 ||
+                  newSL > oldSL
+               )
+               {
+                  ModifySL(
+                     ticket,
+                     newSL
+                  );
+               }
+            }
+         }
+      }
+
+      //============================================================
+      // SELL
+      //============================================================
+      if(type == POSITION_TYPE_SELL)
+      {
+         // TP2
+         if(ask <= ActiveTrade.tp2)
+         {
+            ClosePosition(ticket);
+
+            ResetTradeData();
+
+            return;
+         }
+
+         // TP1
+         if(
+            !ActiveTrade.tp1Reached &&
+            ask <= ActiveTrade.tp1
+         )
+         {
+            ActiveTrade.tp1Reached = true;
+
+            Print(
+               "SELL mencapai TP1 FIBO 0."
+            );
+
+            Print(
+               "Trailing $",
+               TP1TrailingDistanceUSD,
+               " AKTIF."
+            );
+         }
+
+         // Trailing setelah TP1
+         if(
+            ActiveTrade.tp1Reached &&
+            UseTP1Trailing
+         )
+         {
+            double newSL =
+               NormalizeDouble(
+                  ask +
+                  TP1TrailingDistanceUSD,
+                  _Digits
+               );
+
+            double oldSL =
+               PositionGetDouble(
+                  POSITION_SL
+               );
+
+            if(
+               IsValidSLDistance(
+                  ORDER_TYPE_SELL,
+                  newSL
+               )
+            )
+            {
+               if(
+                  oldSL == 0 ||
+                  newSL < oldSL
+               )
+               {
+                  ModifySL(
+                     ticket,
+                     newSL
+                  );
+               }
+            }
+         }
+      }
+   }
+}
+
+//==================================================================//
+// MODIFY SL
+//==================================================================//
+void ModifySL(
+   ulong ticket,
+   double newSL
+)
+{
+   if(!PositionSelectByTicket(ticket))
+      return;
+
+   MqlTradeRequest request;
+   MqlTradeResult result;
+
+   ZeroMemory(request);
+   ZeroMemory(result);
+
+   request.action =
+      TRADE_ACTION_SLTP;
+
+   request.position =
+      ticket;
+
+   request.symbol =
+      _Symbol;
+
+   request.sl =
+      newSL;
+
+   request.tp =
+      PositionGetDouble(
+         POSITION_TP
+      );
+
+   ResetLastError();
+
+   if(!OrderSend(
+      request,
+      result
+   ))
+   {
+      Print(
+         "Modify SL gagal | Error = ",
+         GetLastError()
+      );
+   }
+}
+
+//==================================================================//
+// API
+//==================================================================//
+void CheckApiStatus()
+{
+   if(ApiStatusUrl == "")
+      return;
+
+   if(
+      TimeCurrent() -
+      LastApiCheck <
+      ApiCheckSeconds
+   )
+      return;
+
+   LastApiCheck =
+      TimeCurrent();
+
+   string headers = "";
+
+   char postData[];
+   char result[];
+
+   string resultHeaders;
+
+   ResetLastError();
+
+   int response =
+      WebRequest(
+         "GET",
+         ApiStatusUrl,
+         headers,
+         5000,
+         postData,
+         result,
+         resultHeaders
+      );
+
+   if(response == -1)
+   {
+      Print(
+         "API gagal | Error = ",
+         GetLastError()
+      );
+
+      return;
+   }
+
+   string text =
+      CharArrayToString(
+         result
+      );
+
+   if(
+      StringFind(
+         text,
+         "\"status\":\"RUNNING\""
+      ) >= 0
+   )
+   {
+      BotEnabled = true;
+      return;
+   }
+
+   if(
+      StringFind(
+         text,
+         "\"status\":\"STOPPED\""
+      ) >= 0
+   )
+   {
+      BotEnabled = false;
+      return;
+   }
+
+   Print(
+      "API response tidak dikenali: ",
+      text
+   );
+}
+
+//==================================================================//
+// INIT
+//==================================================================//
+int OnInit()
+{
+   LastEntryBar =
+      iTime(
+         _Symbol,
+         EntryTF,
+         0
+      );
+
+   ResetTradeData();
+
+   CheckApiStatus();
+
+   Print(
+      "======================================"
+   );
+
+   Print(
+      "GoldFiboRejection v4.00 AKTIF"
+   );
+
+   Print(
+      "Swing/Fibo = M30"
+   );
+
+   Print(
+      "Rejection  = M15"
+   );
+
+   Print(
+      "Entry      = M5"
+   );
+
+   Print(
+      "TP1        = Fibo 0.000"
+   );
+
+   Print(
+      "TP2        = Fibo -0.272"
+   );
+
+   Print(
+      "Trailing   = $",
+      TP1TrailingDistanceUSD,
+      " setelah TP1"
+   );
+
+   Print(
+      "API = ",
+      ApiStatusUrl
+   );
+
+   Print(
+      "======================================"
+   );
+
+   return INIT_SUCCEEDED;
+}
+
+//==================================================================//
+// DEINIT
+//==================================================================//
+void OnDeinit(
+   const int reason
+)
+{
+   Print(
+      "GoldFiboRejection dihentikan."
+   );
+}
+
+//==================================================================//
+// TICK
+//==================================================================//
+void OnTick()
+{
+   //===============================================================
+   // API
+   //===============================================================
+   CheckApiStatus();
+
+   //===============================================================
+   // MANAGE POSISI YANG SUDAH TERBUKA
+   //===============================================================
+   if(CountOpenPositions() > 0)
+   {
+      ManageActiveTrade();
+      return;
+   }
+
+   // Kalau posisi sudah tidak ada
+   if(ActiveTrade.valid)
+      ResetTradeData();
+
+   //===============================================================
+   // API STOP
+   //===============================================================
+   if(!BotEnabled)
+      return;
+
+   //===============================================================
+   // ENTRY HANYA PADA BAR M5 BARU
+   //===============================================================
+   if(!IsNewEntryBar())
+      return;
+
+   //===============================================================
+   // MAKSIMAL 1 POSISI
+   //===============================================================
+   if(CountOpenPositions() >= 1)
+      return;
+
+   //===============================================================
+   // SWING M30
+   //===============================================================
+   double swingHigh;
+   double swingLow;
+
+   datetime highTime;
+   datetime lowTime;
+
+   ZoneTrend trend =
+      GetSwingTrend(
+         swingHigh,
+         swingLow,
+         highTime,
+         lowTime
+      );
+
+   if(trend == TREND_NONE)
+      return;
+
+   //===============================================================
+   // ZONE 1
+   //===============================================================
+   double z1Low;
+   double z1High;
+
+   GetZone(
+      trend,
+      swingHigh,
+      swingLow,
+      Zone1Start,
+      Zone1End,
+      z1Low,
+      z1High
+   );
+
+   //===============================================================
+   // ZONE 2
+   //===============================================================
+   double z2Low;
+   double z2High;
+
+   GetZone(
+      trend,
+      swingHigh,
+      swingLow,
+      Zone2Start,
+      Zone2End,
+      z2Low,
+      z2High
+   );
+
+   double price =
+      SymbolInfoDouble(
+         _Symbol,
+         SYMBOL_BID
+      );
+
+   //===============================================================
+   // BUY
+   //===============================================================
+   if(trend == TREND_UP)
+   {
+      bool inZone1 =
+         PriceInZone(
+            price,
+            z1Low,
+            z1High
+         );
+
+      bool inZone2 =
+         PriceInZone(
+            price,
+            z2Low,
+            z2High
+         );
+
+      //============================================================
+      // BUY ZONE 1
+      //============================================================
+      if(inZone1)
+      {
+         datetime rejectionTime = 0;
+
+         if(
+            HasRejection(
+               true,
+               z1Low,
+               z1High,
+               rejectionTime
+            )
+         )
+         {
+            LastRejectionBar =
+               rejectionTime;
+
+            OpenBuy(
+               swingHigh,
+               swingLow
+            );
+         }
+
+         return;
+      }
+
+      //============================================================
+      // BUY ZONE 2
+      //============================================================
+      if(inZone2)
+      {
+         datetime rejectionTime = 0;
+
+         if(
+            HasRejection(
+               true,
+               z2Low,
+               z2High,
+               rejectionTime
+            )
+         )
+         {
+            LastRejectionBar =
+               rejectionTime;
+
+            OpenBuy(
+               swingHigh,
+               swingLow
+            );
+         }
+
+         return;
+      }
+   }
+
+   //===============================================================
+   // SELL
+   //===============================================================
+   if(trend == TREND_DOWN)
+   {
+      bool inZone1 =
+         PriceInZone(
+            price,
+            z1Low,
+            z1High
+         );
+
+      bool inZone2 =
+         PriceInZone(
+            price,
+            z2Low,
+            z2High
+         );
+
+      //============================================================
+      // SELL ZONE 1
+      //============================================================
+      if(inZone1)
+      {
+         datetime rejectionTime = 0;
+
+         if(
+            HasRejection(
+               false,
+               z1Low,
+               z1High,
+               rejectionTime
+            )
+         )
+         {
+            LastRejectionBar =
+               rejectionTime;
+
+            OpenSell(
+               swingHigh,
+               swingLow
+            );
+         }
+
+         return;
+      }
+
+      //============================================================
+      // SELL ZONE 2
+      //============================================================
+      if(inZone2)
+      {
+         datetime rejectionTime = 0;
+
+         if(
+            HasRejection(
+               false,
+               z2Low,
+               z2High,
+               rejectionTime
+            )
+         )
+         {
+            LastRejectionBar =
+               rejectionTime;
+
+            OpenSell(
+               swingHigh,
+               swingLow
+            );
+         }
+
+         return;
+      }
+   }
+}
+//+------------------------------------------------------------------+
