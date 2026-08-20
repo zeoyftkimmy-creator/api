@@ -1,9 +1,9 @@
 //+------------------------------------------------------------------+
-//| Gold3CandleTrail.mq5                                             |
-//| XAUUSD M1 - 3 Candle + Initial SL + Trailing + API START/STOP   |
+//| GoldAI_M1_API_Trailing.mq5                                       |
+//| XAUUSD M1 - 3 Candle + Initial SL + Trailing + API START/STOP    |
 //+------------------------------------------------------------------+
 #property copyright "Custom EA"
-#property version   "1.40"
+#property version   "1.41"
 #property strict
 
 //==================================================================//
@@ -55,8 +55,7 @@ bool botEnabled = true;
 
 bool IsNewBar()
 {
-   datetime currentBarTime =
-      iTime(_Symbol, PERIOD_M1, 0);
+   datetime currentBarTime = iTime(_Symbol, PERIOD_M1, 0);
 
    if(currentBarTime != lastBarTime)
    {
@@ -86,13 +85,10 @@ int CountOpenPositions()
       if(!PositionSelectByTicket(ticket))
          continue;
 
-      //--- Symbol harus sama
       if(PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
 
-      //--- Magic Number harus sama
-      if(PositionGetInteger(POSITION_MAGIC)
-         != (long)MagicNumber)
+      if(PositionGetInteger(POSITION_MAGIC) != (long)MagicNumber)
          continue;
 
       count++;
@@ -108,49 +104,28 @@ int CountOpenPositions()
 
 int Check3CandleSignal()
 {
-   //--- Candle 1
-   double open1 =
-      iOpen(_Symbol, PERIOD_M1, 1);
+   double open1  = iOpen(_Symbol, PERIOD_M1, 1);
+   double close1 = iClose(_Symbol, PERIOD_M1, 1);
 
-   double close1 =
-      iClose(_Symbol, PERIOD_M1, 1);
+   double open2  = iOpen(_Symbol, PERIOD_M1, 2);
+   double close2 = iClose(_Symbol, PERIOD_M1, 2);
 
-   //--- Candle 2
-   double open2 =
-      iOpen(_Symbol, PERIOD_M1, 2);
+   double open3  = iOpen(_Symbol, PERIOD_M1, 3);
+   double close3 = iClose(_Symbol, PERIOD_M1, 3);
 
-   double close2 =
-      iClose(_Symbol, PERIOD_M1, 2);
-
-   //--- Candle 3
-   double open3 =
-      iOpen(_Symbol, PERIOD_M1, 3);
-
-   double close3 =
-      iClose(_Symbol, PERIOD_M1, 3);
-
-
-   //--- Bullish
    bool bull1 = close1 > open1;
    bool bull2 = close2 > open2;
    bool bull3 = close3 > open3;
 
-
-   //--- Bearish
    bool bear1 = close1 < open1;
    bool bear2 = close2 < open2;
    bool bear3 = close3 < open3;
 
-
-   //--- 3 candle bullish
    if(bull1 && bull2 && bull3)
       return 1;
 
-
-   //--- 3 candle bearish
    if(bear1 && bear2 && bear3)
       return -1;
-
 
    return 0;
 }
@@ -158,40 +133,28 @@ int Check3CandleSignal()
 
 //==================================================================//
 // CEK API START / STOP
+//
+// FIX: API kamu balikin format {"status":"RUNNING"} / {"status":"STOPPED"}
+// bukan {"running":true/false} - jadi dicek keduanya biar aman
 //==================================================================//
 
 void CheckApiStatus()
 {
-   //--- API kosong
    if(ApiStatusUrl == "")
       return;
 
-
-   //--- Cek setiap beberapa detik
-   if(TimeCurrent() - lastApiCheckTime
-      < ApiCheckSeconds)
+   if(TimeCurrent() - lastApiCheckTime < ApiCheckSeconds)
       return;
-
 
    lastApiCheckTime = TimeCurrent();
 
-
    string headers = "";
-
-   char postData[];
-   char result[];
-
+   char   postData[];
+   char   result[];
    string resultHeaders;
-
-   int timeout = 5000;
-
+   int    timeout = 5000;
 
    ResetLastError();
-
-
-   //===============================================================
-   // WEB REQUEST
-   //===============================================================
 
    int res = WebRequest(
       "GET",
@@ -203,94 +166,45 @@ void CheckApiStatus()
       resultHeaders
    );
 
-
-   //===============================================================
-   // REQUEST GAGAL
-   //===============================================================
-
    if(res == -1)
    {
-      Print(
-         "WebRequest API gagal. Error = ",
-         GetLastError()
-      );
-
+      Print("WebRequest API gagal. Error = ", GetLastError());
       return;
    }
 
+   string response = CharArrayToString(result);
 
-   //===============================================================
-   // RESPONSE API
-   //===============================================================
+   Print("API Response: ", response);
 
-   string response =
-      CharArrayToString(result);
-
-
-   Print(
-      "API Response: ",
-      response
-   );
-
-
-   //===============================================================
-   // API RUNNING
-   //
-   // Contoh:
-   // {"running":true}
-   //===============================================================
-
+   //--- API RUNNING (dukung format "status":"RUNNING" dan "running":true)
    if(
-      StringFind(response, "\"running\":true") >= 0 ||
-      StringFind(response, "\"running\": true") >= 0
+      StringFind(response, "\"status\":\"RUNNING\"") >= 0 ||
+      StringFind(response, "\"running\":true")        >= 0 ||
+      StringFind(response, "\"running\": true")        >= 0
    )
    {
       if(!botEnabled)
-      {
-         Print(
-            "API RUNNING -> Bot AKTIF"
-         );
-      }
+         Print("API RUNNING -> Bot AKTIF");
 
       botEnabled = true;
-
       return;
    }
 
-
-   //===============================================================
-   // API STOPPED
-   //
-   // Contoh:
-   // {"running":false}
-   //===============================================================
-
+   //--- API STOPPED (dukung format "status":"STOPPED" dan "running":false)
    if(
-      StringFind(response, "\"running\":false") >= 0 ||
-      StringFind(response, "\"running\": false") >= 0
+      StringFind(response, "\"status\":\"STOPPED\"") >= 0 ||
+      StringFind(response, "\"running\":false")        >= 0 ||
+      StringFind(response, "\"running\": false")        >= 0
    )
    {
       if(botEnabled)
-      {
-         Print(
-            "API STOPPED -> Entry BARU dihentikan"
-         );
-      }
+         Print("API STOPPED -> Entry BARU dihentikan");
 
       botEnabled = false;
-
       return;
    }
 
-
-   //===============================================================
-   // RESPONSE TIDAK DIKENALI
-   //===============================================================
-
-   Print(
-      "Response API tidak dikenali: ",
-      response
-   );
+   Print("Response API tidak dikenali: ", response);
 }
 
 
@@ -298,52 +212,56 @@ void CheckApiStatus()
 // CEK JARAK MINIMUM SL BROKER
 //==================================================================//
 
-bool IsValidSLDistance(
-   ENUM_ORDER_TYPE orderType,
-   double sl
-)
+bool IsValidSLDistance(ENUM_ORDER_TYPE orderType, double sl)
 {
-   double bid =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_BID
-      );
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-   double ask =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_ASK
-      );
+   long stopsLevel = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDistance = stopsLevel * _Point;
 
-
-   long stopsLevel =
-      SymbolInfoInteger(
-         _Symbol,
-         SYMBOL_TRADE_STOPS_LEVEL
-      );
-
-
-   double minDistance =
-      stopsLevel * _Point;
-
-
-   //--- BUY
    if(orderType == ORDER_TYPE_BUY)
    {
       if((bid - sl) < minDistance)
          return false;
    }
 
-
-   //--- SELL
    if(orderType == ORDER_TYPE_SELL)
    {
       if((sl - ask) < minDistance)
          return false;
    }
 
-
    return true;
+}
+
+
+//==================================================================//
+// FIX: TENTUKAN FILLING MODE YANG BENAR-BENAR DIDUKUNG BROKER
+//
+// SYMBOL_FILLING_MODE adalah BITMASK, tidak boleh langsung di-cast
+// ke ENUM_ORDER_TYPE_FILLING. Ini penyebab error
+// "Unsupported filling mode" di Exness.
+//==================================================================//
+
+ENUM_ORDER_TYPE_FILLING GetFillingMode()
+{
+   int filling = (int)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+
+   //--- broker tidak mendeklarasikan mode -> default paling umum
+   if(filling == 0)
+      return ORDER_FILLING_IOC;
+
+   //--- FOK didukung
+   if((filling & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return ORDER_FILLING_FOK;
+
+   //--- IOC didukung
+   if((filling & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return ORDER_FILLING_IOC;
+
+   //--- fallback terakhir
+   return ORDER_FILLING_RETURN;
 }
 
 
@@ -359,132 +277,44 @@ void OpenBuy()
    ZeroMemory(request);
    ZeroMemory(result);
 
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-   double ask =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_ASK
-      );
+   double sl = ask - InitialSLDistance;
+   sl = NormalizeDouble(sl, _Digits);
 
-
-   //===============================================================
-   // INITIAL SL
-   //
-   // Contoh:
-   // Entry = 3998.00
-   // SL    = 3996.00
-   //===============================================================
-
-   double sl =
-      ask - InitialSLDistance;
-
-
-   sl =
-      NormalizeDouble(
-         sl,
-         _Digits
-      );
-
-
-   //--- Cek jarak SL
-   if(!IsValidSLDistance(
-      ORDER_TYPE_BUY,
-      sl
-   ))
+   if(!IsValidSLDistance(ORDER_TYPE_BUY, sl))
    {
-      Print(
-         "BUY dibatalkan: Initial SL terlalu dekat."
-      );
-
+      Print("BUY dibatalkan: Initial SL terlalu dekat.");
       return;
    }
 
-
-   //===============================================================
-   // REQUEST BUY
-   //===============================================================
-
-   request.action =
-      TRADE_ACTION_DEAL;
-
-   request.symbol =
-      _Symbol;
-
-   request.volume =
-      LotSize;
-
-   request.type =
-      ORDER_TYPE_BUY;
-
-   request.price =
-      ask;
-
-   request.sl =
-      sl;
-
-   request.tp =
-      0;
-
-   request.deviation =
-      Slippage;
-
-   request.magic =
-      MagicNumber;
-
-   request.comment =
-      "3Candle-BUY";
-
-
-   //--- gunakan filling mode broker
-   request.type_filling =
-      (ENUM_ORDER_TYPE_FILLING)
-      SymbolInfoInteger(
-         _Symbol,
-         SYMBOL_FILLING_MODE
-      );
-
+   request.action       = TRADE_ACTION_DEAL;
+   request.symbol        = _Symbol;
+   request.volume        = LotSize;
+   request.type          = ORDER_TYPE_BUY;
+   request.price         = ask;
+   request.sl            = sl;
+   request.tp             = 0;
+   request.deviation     = Slippage;
+   request.magic         = MagicNumber;
+   request.comment       = "3Candle-BUY";
+   request.type_filling  = GetFillingMode(); // FIX
 
    ResetLastError();
 
-
-   if(!OrderSend(
-      request,
-      result
-   ))
+   if(!OrderSend(request, result))
    {
-      Print(
-         "BUY gagal. Error = ",
-         GetLastError()
-      );
-
+      Print("BUY gagal. Error = ", GetLastError());
       return;
    }
 
-
-   //===============================================================
-   // CEK HASIL ORDER
-   //===============================================================
-
-   if(
-      result.retcode != TRADE_RETCODE_DONE &&
-      result.retcode != TRADE_RETCODE_PLACED
-   )
+   if(result.retcode != TRADE_RETCODE_DONE && result.retcode != TRADE_RETCODE_PLACED)
    {
-      Print(
-         "BUY ditolak broker. Retcode = ",
-         result.retcode
-      );
-
+      Print("BUY ditolak broker. Retcode = ", result.retcode);
       return;
    }
 
-
-   Print(
-      "BUY BERHASIL | Entry = ",
-      ask,
-      " | Initial SL = ",
-      sl
-   );
+   Print("BUY BERHASIL | Entry = ", ask, " | Initial SL = ", sl);
 }
 
 
@@ -500,132 +330,44 @@ void OpenSell()
    ZeroMemory(request);
    ZeroMemory(result);
 
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-   double bid =
-      SymbolInfoDouble(
-         _Symbol,
-         SYMBOL_BID
-      );
+   double sl = bid + InitialSLDistance;
+   sl = NormalizeDouble(sl, _Digits);
 
-
-   //===============================================================
-   // INITIAL SL
-   //
-   // Contoh:
-   // Entry = 3998.00
-   // SL    = 4000.00
-   //===============================================================
-
-   double sl =
-      bid + InitialSLDistance;
-
-
-   sl =
-      NormalizeDouble(
-         sl,
-         _Digits
-      );
-
-
-   //--- Cek jarak SL
-   if(!IsValidSLDistance(
-      ORDER_TYPE_SELL,
-      sl
-   ))
+   if(!IsValidSLDistance(ORDER_TYPE_SELL, sl))
    {
-      Print(
-         "SELL dibatalkan: Initial SL terlalu dekat."
-      );
-
+      Print("SELL dibatalkan: Initial SL terlalu dekat.");
       return;
    }
 
-
-   //===============================================================
-   // REQUEST SELL
-   //===============================================================
-
-   request.action =
-      TRADE_ACTION_DEAL;
-
-   request.symbol =
-      _Symbol;
-
-   request.volume =
-      LotSize;
-
-   request.type =
-      ORDER_TYPE_SELL;
-
-   request.price =
-      bid;
-
-   request.sl =
-      sl;
-
-   request.tp =
-      0;
-
-   request.deviation =
-      Slippage;
-
-   request.magic =
-      MagicNumber;
-
-   request.comment =
-      "3Candle-SELL";
-
-
-   //--- gunakan filling mode broker
-   request.type_filling =
-      (ENUM_ORDER_TYPE_FILLING)
-      SymbolInfoInteger(
-         _Symbol,
-         SYMBOL_FILLING_MODE
-      );
-
+   request.action       = TRADE_ACTION_DEAL;
+   request.symbol        = _Symbol;
+   request.volume        = LotSize;
+   request.type          = ORDER_TYPE_SELL;
+   request.price         = bid;
+   request.sl            = sl;
+   request.tp             = 0;
+   request.deviation     = Slippage;
+   request.magic         = MagicNumber;
+   request.comment       = "3Candle-SELL";
+   request.type_filling  = GetFillingMode(); // FIX
 
    ResetLastError();
 
-
-   if(!OrderSend(
-      request,
-      result
-   ))
+   if(!OrderSend(request, result))
    {
-      Print(
-         "SELL gagal. Error = ",
-         GetLastError()
-      );
-
+      Print("SELL gagal. Error = ", GetLastError());
       return;
    }
 
-
-   //===============================================================
-   // CEK HASIL ORDER
-   //===============================================================
-
-   if(
-      result.retcode != TRADE_RETCODE_DONE &&
-      result.retcode != TRADE_RETCODE_PLACED
-   )
+   if(result.retcode != TRADE_RETCODE_DONE && result.retcode != TRADE_RETCODE_PLACED)
    {
-      Print(
-         "SELL ditolak broker. Retcode = ",
-         result.retcode
-      );
-
+      Print("SELL ditolak broker. Retcode = ", result.retcode);
       return;
    }
 
-
-   Print(
-      "SELL BERHASIL | Entry = ",
-      bid,
-      " | Initial SL = ",
-      sl
-   );
+   Print("SELL BERHASIL | Entry = ", bid, " | Initial SL = ", sl);
 }
 
 
@@ -635,234 +377,59 @@ void OpenSell()
 
 void TrailPositions()
 {
-   for(
-      int i = PositionsTotal() - 1;
-      i >= 0;
-      i--
-   )
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      ulong ticket =
-         PositionGetTicket(i);
-
+      ulong ticket = PositionGetTicket(i);
 
       if(ticket <= 0)
          continue;
 
-
       if(!PositionSelectByTicket(ticket))
          continue;
 
-
-      //=============================================================
-      // FILTER SYMBOL
-      //=============================================================
-
-      if(
-         PositionGetString(
-            POSITION_SYMBOL
-         ) != _Symbol
-      )
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
          continue;
 
-
-      //=============================================================
-      // FILTER MAGIC
-      //=============================================================
-
-      if(
-         PositionGetInteger(
-            POSITION_MAGIC
-         ) != (long)MagicNumber
-      )
+      if(PositionGetInteger(POSITION_MAGIC) != (long)MagicNumber)
          continue;
 
+      long posType   = PositionGetInteger(POSITION_TYPE);
+      double posOpen  = PositionGetDouble(POSITION_PRICE_OPEN);
+      double posSL    = PositionGetDouble(POSITION_SL);
+      double bid       = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      double ask       = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-      //=============================================================
-      // DATA POSISI
-      //=============================================================
-
-      long posType =
-         PositionGetInteger(
-            POSITION_TYPE
-         );
-
-
-      double posOpen =
-         PositionGetDouble(
-            POSITION_PRICE_OPEN
-         );
-
-
-      double posSL =
-         PositionGetDouble(
-            POSITION_SL
-         );
-
-
-      double bid =
-         SymbolInfoDouble(
-            _Symbol,
-            SYMBOL_BID
-         );
-
-
-      double ask =
-         SymbolInfoDouble(
-            _Symbol,
-            SYMBOL_ASK
-         );
-
-
-      //=============================================================
-      // BUY TRAILING
-      //=============================================================
-
-      if(
-         posType == POSITION_TYPE_BUY
-      )
+      if(posType == POSITION_TYPE_BUY)
       {
-         //--- Hitung running dalam pip
-         double profitPips =
-            (bid - posOpen)
-            / PipSize;
+         double profitPips = (bid - posOpen) / PipSize;
 
-
-         //--- Belum mencapai +50 pips
-         if(
-            profitPips <
-            TrailStart_Pips
-         )
-         {
+         if(profitPips < TrailStart_Pips)
             continue;
-         }
 
+         double newSL = bid - (TrailDistance_Pips * PipSize);
+         newSL = NormalizeDouble(newSL, _Digits);
 
-         //==========================================================
-         // TRAILING SL
-         //
-         // Entry 3998.00
-         //
-         // Harga 3998.50
-         // Running +50 pips
-         //
-         // SL:
-         // 3998.50 - 0.05
-         // = 3998.45
-         //==========================================================
-
-         double newSL =
-            bid -
-            (
-               TrailDistance_Pips *
-               PipSize
-            );
-
-
-         newSL =
-            NormalizeDouble(
-               newSL,
-               _Digits
-            );
-
-
-         //--- Pastikan SL valid
-         if(!IsValidSLDistance(
-            ORDER_TYPE_BUY,
-            newSL
-         ))
-         {
+         if(!IsValidSLDistance(ORDER_TYPE_BUY, newSL))
             continue;
-         }
 
-
-         //--- SL hanya BOLEH NAIK
-         if(
-            posSL == 0 ||
-            newSL > posSL
-         )
-         {
-            ModifySL(
-               ticket,
-               newSL
-            );
-         }
+         if(posSL == 0 || newSL > posSL)
+            ModifySL(ticket, newSL);
       }
-
-
-      //=============================================================
-      // SELL TRAILING
-      //=============================================================
-
-      else
-      if(
-         posType == POSITION_TYPE_SELL
-      )
+      else if(posType == POSITION_TYPE_SELL)
       {
-         //--- Hitung running dalam pip
-         double profitPips =
-            (posOpen - ask)
-            / PipSize;
+         double profitPips = (posOpen - ask) / PipSize;
 
-
-         //--- Belum mencapai +50 pips
-         if(
-            profitPips <
-            TrailStart_Pips
-         )
-         {
+         if(profitPips < TrailStart_Pips)
             continue;
-         }
 
+         double newSL = ask + (TrailDistance_Pips * PipSize);
+         newSL = NormalizeDouble(newSL, _Digits);
 
-         //==========================================================
-         // TRAILING SL
-         //
-         // Entry 3998.00
-         //
-         // Harga 3997.50
-         // Running +50 pips
-         //
-         // SL:
-         // 3997.50 + 0.05
-         // = 3997.55
-         //==========================================================
-
-         double newSL =
-            ask +
-            (
-               TrailDistance_Pips *
-               PipSize
-            );
-
-
-         newSL =
-            NormalizeDouble(
-               newSL,
-               _Digits
-            );
-
-
-         //--- Pastikan SL valid
-         if(!IsValidSLDistance(
-            ORDER_TYPE_SELL,
-            newSL
-         ))
-         {
+         if(!IsValidSLDistance(ORDER_TYPE_SELL, newSL))
             continue;
-         }
 
-
-         //--- SL hanya BOLEH TURUN
-         if(
-            posSL == 0 ||
-            newSL < posSL
-         )
-         {
-            ModifySL(
-               ticket,
-               newSL
-            );
-         }
+         if(posSL == 0 || newSL < posSL)
+            ModifySL(ticket, newSL);
       }
    }
 }
@@ -872,10 +439,7 @@ void TrailPositions()
 // MODIFIKASI SL
 //==================================================================//
 
-void ModifySL(
-   ulong ticket,
-   double newSL
-)
+void ModifySL(ulong ticket, double newSL)
 {
    MqlTradeRequest request;
    MqlTradeResult  result;
@@ -883,79 +447,30 @@ void ModifySL(
    ZeroMemory(request);
    ZeroMemory(result);
 
-
-   //--- pilih posisi
    if(!PositionSelectByTicket(ticket))
       return;
 
-
-   //===============================================================
-   // REQUEST SLTP
-   //===============================================================
-
-   request.action =
-      TRADE_ACTION_SLTP;
-
-   request.position =
-      ticket;
-
-   request.symbol =
-      _Symbol;
-
-   request.sl =
-      newSL;
-
-   request.tp =
-      PositionGetDouble(
-         POSITION_TP
-      );
-
+   request.action   = TRADE_ACTION_SLTP;
+   request.position = ticket;
+   request.symbol    = _Symbol;
+   request.sl         = newSL;
+   request.tp          = PositionGetDouble(POSITION_TP);
 
    ResetLastError();
 
-
-   if(!OrderSend(
-      request,
-      result
-   ))
+   if(!OrderSend(request, result))
    {
-      Print(
-         "Modify SL gagal | Ticket = ",
-         ticket,
-         " | Error = ",
-         GetLastError()
-      );
-
+      Print("Modify SL gagal | Ticket = ", ticket, " | Error = ", GetLastError());
       return;
    }
 
-
-   //===============================================================
-   // CEK HASIL
-   //===============================================================
-
-   if(
-      result.retcode !=
-      TRADE_RETCODE_DONE
-   )
+   if(result.retcode != TRADE_RETCODE_DONE)
    {
-      Print(
-         "Modify SL ditolak | Ticket = ",
-         ticket,
-         " | Retcode = ",
-         result.retcode
-      );
-
+      Print("Modify SL ditolak | Ticket = ", ticket, " | Retcode = ", result.retcode);
       return;
    }
 
-
-   Print(
-      "TRAILING SL BERGERAK | Ticket = ",
-      ticket,
-      " | New SL = ",
-      newSL
-   );
+   Print("TRAILING SL BERGERAK | Ticket = ", ticket, " | New SL = ", newSL);
 }
 
 
@@ -965,75 +480,21 @@ void ModifySL(
 
 int OnInit()
 {
-   //--- simpan candle saat EA dipasang
-   lastBarTime =
-      iTime(
-         _Symbol,
-         PERIOD_M1,
-         0
-      );
+   lastBarTime = iTime(_Symbol, PERIOD_M1, 0);
 
-
-   //--- cek API
    CheckApiStatus();
 
-
-   //===============================================================
-   // LOG
-   //===============================================================
-
-   Print(
-      "=========================================="
-   );
-
-   Print(
-      "Gold3CandleTrail AKTIF"
-   );
-
-   Print(
-      "Symbol = ",
-      _Symbol
-   );
-
-   Print(
-      "Timeframe = M1"
-   );
-
-   Print(
-      "Lot = ",
-      LotSize
-   );
-
-   Print(
-      "Initial SL = $",
-      InitialSLDistance
-   );
-
-   Print(
-      "Trailing Start = ",
-      TrailStart_Pips,
-      " pips ($",
-      TrailStart_Pips * PipSize,
-      ")"
-   );
-
-   Print(
-      "Trailing Distance = ",
-      TrailDistance_Pips,
-      " pips ($",
-      TrailDistance_Pips * PipSize,
-      ")"
-   );
-
-   Print(
-      "PipSize = ",
-      PipSize
-   );
-
-   Print(
-      "=========================================="
-   );
-
+   Print("==========================================");
+   Print("GoldAI_M1_API_Trailing AKTIF");
+   Print("Symbol = ", _Symbol);
+   Print("Timeframe = M1");
+   Print("Lot = ", LotSize);
+   Print("Initial SL = $", InitialSLDistance);
+   Print("Trailing Start = ", TrailStart_Pips, " pips ($", TrailStart_Pips * PipSize, ")");
+   Print("Trailing Distance = ", TrailDistance_Pips, " pips ($", TrailDistance_Pips * PipSize, ")");
+   Print("PipSize = ", PipSize);
+   Print("Filling Mode terdeteksi = ", EnumToString(GetFillingMode()));
+   Print("==========================================");
 
    return(INIT_SUCCEEDED);
 }
@@ -1045,83 +506,25 @@ int OnInit()
 
 void OnTick()
 {
-   //===============================================================
-   // CEK API
-   //===============================================================
-
    CheckApiStatus();
 
-
-   //===============================================================
-   // TRAILING SELALU BERJALAN
-   //
-   // Walaupun API STOP
-   //===============================================================
-
-   if(
-      CountOpenPositions() > 0
-   )
-   {
+   if(CountOpenPositions() > 0)
       TrailPositions();
-   }
-
-
-   //===============================================================
-   // API STOP
-   //
-   // Tidak boleh entry baru
-   //===============================================================
 
    if(!botEnabled)
       return;
 
-
-   //===============================================================
-   // ENTRY HANYA PADA CANDLE M1 BARU
-   //===============================================================
-
    if(!IsNewBar())
       return;
 
-
-   //===============================================================
-   // MAKSIMAL 1 POSISI
-   //===============================================================
-
-   if(
-      CountOpenPositions() >= 1
-   )
-   {
+   if(CountOpenPositions() >= 1)
       return;
-   }
 
-
-   //===============================================================
-   // CEK 3 CANDLE
-   //===============================================================
-
-   int signal =
-      Check3CandleSignal();
-
-
-   //===============================================================
-   // BUY
-   //===============================================================
+   int signal = Check3CandleSignal();
 
    if(signal == 1)
-   {
       OpenBuy();
-   }
-
-
-   //===============================================================
-   // SELL
-   //===============================================================
-
-   else
-   if(signal == -1)
-   {
+   else if(signal == -1)
       OpenSell();
-   }
 }
 //+------------------------------------------------------------------+
