@@ -1,9 +1,13 @@
 //+------------------------------------------------------------------+
-//| GoldFiboRejection_v4.mq5                                        |
+//| GoldFiboRejection_v5.mq5                                        |
 //| XAUUSD                                                          |
 //|                                                                  |
 //| M30 = Swing High / Swing Low + Fibonacci                       |
-//| M15 = Rejection Confirmation                                    |
+//| Rejection Confirmation bertingkat:                              |
+//|   1) M15 (candle sudah close)                                   |
+//|   2) Jika M15 tidak ada -> M30 (candle sudah close)              |
+//|   3) Jika M30 tidak ada -> H1 (candle berjalan, TIDAK tunggu    |
+//|      close)                                                      |
 //| M5  = Entry                                                      |
 //|                                                                  |
 //| BUY:                                                             |
@@ -19,7 +23,7 @@
 //| Posisi tetap running sampai TP2 atau trailing SL terkena        |
 //+------------------------------------------------------------------+
 #property copyright "Custom EA"
-#property version   "4.00"
+#property version   "5.00"
 #property strict
 
 //==================================================================//
@@ -39,9 +43,11 @@ input double TP1Level = 0.000;
 input double TP2Level = -0.272;
 
 //==================================================================//
-// REJECTION
+// REJECTION (bertingkat: M15 -> M30 -> H1)
 //==================================================================//
-input ENUM_TIMEFRAMES RejectionTF = PERIOD_M15;
+input ENUM_TIMEFRAMES RejectionTF_M15 = PERIOD_M15;
+input ENUM_TIMEFRAMES RejectionTF_M30 = PERIOD_M30;
+input ENUM_TIMEFRAMES RejectionTF_H1  = PERIOD_H1;
 
 // Minimal wick terhadap range candle
 input double RejectionWickRatio = 0.50;
@@ -97,7 +103,13 @@ enum ZoneTrend
 // GLOBAL
 //==================================================================//
 datetime LastEntryBar = 0;
-datetime LastRejectionBar = 0;
+
+// Dedupe rejection per timeframe, supaya sinyal yang sama
+// tidak dipakai berulang kali
+datetime LastRejectionBarM15 = 0;
+datetime LastRejectionBarM30 = 0;
+datetime LastRejectionBarH1  = 0;
+
 datetime LastApiCheck = 0;
 
 bool BotEnabled = true;
@@ -366,62 +378,40 @@ bool PriceInZone(
 }
 
 //==================================================================//
-// REJECTION M15
+// CEK REJECTION DI SATU TIMEFRAME + SHIFT TERTENTU
+// shift = 1  -> candle terakhir yang SUDAH close
+// shift = 0  -> candle yang SEDANG berjalan (belum close)
 //==================================================================//
-bool HasRejection(
+bool CheckRejectionTF(
    bool forBuy,
+   ENUM_TIMEFRAMES tf,
+   int shift,
    double zoneLow,
    double zoneHigh,
-   datetime &rejectionTime
+   datetime &candleTimeOut
 )
 {
    datetime candleTime =
       iTime(
          _Symbol,
-         RejectionTF,
-         1
+         tf,
+         shift
       );
 
    if(candleTime <= 0)
       return false;
 
-   if(candleTime == LastRejectionBar)
-      return false;
-
-   double o =
-      iOpen(
-         _Symbol,
-         RejectionTF,
-         1
-      );
-
-   double c =
-      iClose(
-         _Symbol,
-         RejectionTF,
-         1
-      );
-
-   double h =
-      iHigh(
-         _Symbol,
-         RejectionTF,
-         1
-      );
-
-   double l =
-      iLow(
-         _Symbol,
-         RejectionTF,
-         1
-      );
+   double o = iOpen(_Symbol, tf, shift);
+   double c = iClose(_Symbol, tf, shift);
+   double h = iHigh(_Symbol, tf, shift);
+   double l = iLow(_Symbol, tf, shift);
 
    double range = h - l;
 
    if(range <= 0)
       return false;
 
-   // Candle M15 harus menyentuh zone
+   // Candle harus menyentuh zone
    bool touchesZone =
       h >= zoneLow &&
       l <= zoneHigh;
@@ -463,9 +453,7 @@ bool HasRejection(
          closeStrong
       )
       {
-         rejectionTime =
-            candleTime;
-
+         candleTimeOut = candleTime;
          return true;
       }
    }
@@ -492,9 +480,96 @@ bool HasRejection(
          closeStrong
       )
       {
-         rejectionTime =
-            candleTime;
+         candleTimeOut = candleTime;
+         return true;
+      }
+   }
 
+   return false;
+}
+
+//==================================================================//
+// REJECTION BERTINGKAT: M15 -> M30 -> H1
+// H1 dicek dari candle yang SEDANG berjalan (shift 0),
+// tidak menunggu candle close.
+//==================================================================//
+bool FindRejectionMultiTF(
+   bool forBuy,
+   double zoneLow,
+   double zoneHigh,
+   string &usedTF
+)
+{
+   datetime candleTime = 0;
+
+   //============================================================
+   // 1) M15 - candle sudah close
+   //============================================================
+   candleTime = 0;
+
+   if(
+      CheckRejectionTF(
+         forBuy,
+         RejectionTF_M15,
+         1,
+         zoneLow,
+         zoneHigh,
+         candleTime
+      )
+   )
+   {
+      if(candleTime != LastRejectionBarM15)
+      {
+         LastRejectionBarM15 = candleTime;
+         usedTF = "M15";
+         return true;
+      }
+   }
+
+   //============================================================
+   // 2) M30 - candle sudah close
+   //============================================================
+   candleTime = 0;
+
+   if(
+      CheckRejectionTF(
+         forBuy,
+         RejectionTF_M30,
+         1,
+         zoneLow,
+         zoneHigh,
+         candleTime
+      )
+   )
+   {
+      if(candleTime != LastRejectionBarM30)
+      {
+         LastRejectionBarM30 = candleTime;
+         usedTF = "M30";
+         return true;
+      }
+   }
+
+   //============================================================
+   // 3) H1 - candle SEDANG berjalan, tidak tunggu close
+   //============================================================
+   candleTime = 0;
+
+   if(
+      CheckRejectionTF(
+         forBuy,
+         RejectionTF_H1,
+         0,
+         zoneLow,
+         zoneHigh,
+         candleTime
+      )
+   )
+   {
+      if(candleTime != LastRejectionBarH1)
+      {
+         LastRejectionBarH1 = candleTime;
+         usedTF = "H1";
          return true;
       }
    }
@@ -583,7 +658,8 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode()
 //==================================================================//
 void OpenBuy(
    double swingHigh,
-   double swingLow
+   double swingLow,
+   string usedTF
 )
 {
    double sl =
@@ -671,7 +747,7 @@ void OpenBuy(
       MagicNumber;
 
    request.comment =
-      "Fibo-BUY";
+      "Fibo-BUY-" + usedTF;
 
    request.type_filling =
       GetFillingMode();
@@ -726,7 +802,8 @@ void OpenBuy(
       );
 
       Print(
-         "BUY OPEN"
+         "BUY OPEN | Rejection dari ",
+         usedTF
       );
 
       Print(
@@ -760,7 +837,8 @@ void OpenBuy(
 //==================================================================//
 void OpenSell(
    double swingHigh,
-   double swingLow
+   double swingLow,
+   string usedTF
 )
 {
    double sl =
@@ -847,7 +925,7 @@ void OpenSell(
       MagicNumber;
 
    request.comment =
-      "Fibo-SELL";
+      "Fibo-SELL-" + usedTF;
 
    request.type_filling =
       GetFillingMode();
@@ -902,7 +980,8 @@ void OpenSell(
       );
 
       Print(
-         "SELL OPEN"
+         "SELL OPEN | Rejection dari ",
+         usedTF
       );
 
       Print(
@@ -1343,23 +1422,15 @@ void CheckApiStatus()
          result
       );
 
-   if(
-      StringFind(
-         text,
-         "\"status\":\"RUNNING\""
-      ) >= 0
-   )
+   // Cek longgar (mirip logika di app Kodular): cukup cari
+   // kata kuncinya, tidak terpaku pada format JSON yang kaku
+   if(StringFind(text, "RUNNING") >= 0)
    {
       BotEnabled = true;
       return;
    }
 
-   if(
-      StringFind(
-         text,
-         "\"status\":\"STOPPED\""
-      ) >= 0
-   )
+   if(StringFind(text, "STOPPED") >= 0)
    {
       BotEnabled = false;
       return;
@@ -1392,7 +1463,7 @@ int OnInit()
    );
 
    Print(
-      "GoldFiboRejection v4.00 AKTIF"
+      "GoldFiboRejection v5.00 AKTIF"
    );
 
    Print(
@@ -1400,7 +1471,7 @@ int OnInit()
    );
 
    Print(
-      "Rejection  = M15"
+      "Rejection  = M15 -> M30 -> H1 (H1 tanpa tunggu close)"
    );
 
    Print(
@@ -1568,23 +1639,21 @@ void OnTick()
       //============================================================
       if(inZone1)
       {
-         datetime rejectionTime = 0;
+         string usedTF = "";
 
          if(
-            HasRejection(
+            FindRejectionMultiTF(
                true,
                z1Low,
                z1High,
-               rejectionTime
+               usedTF
             )
          )
          {
-            LastRejectionBar =
-               rejectionTime;
-
             OpenBuy(
                swingHigh,
-               swingLow
+               swingLow,
+               usedTF
             );
          }
 
@@ -1596,23 +1665,21 @@ void OnTick()
       //============================================================
       if(inZone2)
       {
-         datetime rejectionTime = 0;
+         string usedTF = "";
 
          if(
-            HasRejection(
+            FindRejectionMultiTF(
                true,
                z2Low,
                z2High,
-               rejectionTime
+               usedTF
             )
          )
          {
-            LastRejectionBar =
-               rejectionTime;
-
             OpenBuy(
                swingHigh,
-               swingLow
+               swingLow,
+               usedTF
             );
          }
 
@@ -1644,23 +1711,21 @@ void OnTick()
       //============================================================
       if(inZone1)
       {
-         datetime rejectionTime = 0;
+         string usedTF = "";
 
          if(
-            HasRejection(
+            FindRejectionMultiTF(
                false,
                z1Low,
                z1High,
-               rejectionTime
+               usedTF
             )
          )
          {
-            LastRejectionBar =
-               rejectionTime;
-
             OpenSell(
                swingHigh,
-               swingLow
+               swingLow,
+               usedTF
             );
          }
 
@@ -1672,23 +1737,21 @@ void OnTick()
       //============================================================
       if(inZone2)
       {
-         datetime rejectionTime = 0;
+         string usedTF = "";
 
          if(
-            HasRejection(
+            FindRejectionMultiTF(
                false,
                z2Low,
                z2High,
-               rejectionTime
+               usedTF
             )
          )
          {
-            LastRejectionBar =
-               rejectionTime;
-
             OpenSell(
                swingHigh,
-               swingLow
+               swingLow,
+               usedTF
             );
          }
 
